@@ -104,11 +104,8 @@ async def get_favorites(limit: int = 20, session: AsyncSession = Depends(get_ses
             "calification": p.calification,
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
-            "destacado": p.destacado,
-            "consoles": [
-                {"id_console": c.id_console, "descripcion": c.descripcion, "estado": c.estado}
-                for c in product.consoles
-            ]
+            "destacado": p.destacado
+
         }
         for p in products
     ]

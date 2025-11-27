@@ -71,6 +71,8 @@ async def get_products(after_id: int | None = None, limit: int = 10, session: As
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "type_id_id": p.type_id_id,
+            "tipo_juego_id": p.tipo_juego_id,
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []

@@ -3,6 +3,12 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
 
+products_products_consola = Table(
+    "products_products_consola", Base.metadata,
+    Column("products_id", Integer, ForeignKey("products_products.id_product"), primary_key=True),
+    Column("consoles_id", Integer, ForeignKey("products_consoles.id_console"), primary_key=True),
+)
+
 class Product(Base):
     __tablename__ = "products_products"
     id_product = Column(Integer, primary_key=True, autoincrement=True)
@@ -17,6 +23,7 @@ class Product(Base):
     destacado = Column(Boolean, default=False)
     type_id_id = Column(String(50), default="")
     tipo_juego_id = Column(String(50), default="")
+    consoles = relationship("Consoles", secondary=products_products_consola, back_populates="products", lazy="selectin")
 
 
 class GameDetail(Base):
@@ -59,6 +66,14 @@ class Consoles(Base):
     id_console = Column(Integer, primary_key=True, autoincrement=True)
     descripcion = Column(String(100))
     estado = Column(Boolean, nullable=True)
+
+    # relación inversa many-to-many — debe coincidir con Product.consoles
+    products = relationship(
+        "Product",
+        secondary=products_products_consola,
+        back_populates="consoles",
+        lazy="selectin",
+    )
 
     def __str__(self) -> str:
         return self.descripcion

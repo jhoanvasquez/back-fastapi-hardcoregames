@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, ForeignKey, Boolean, Table
+from sqlalchemy import Column, Integer, String, Date, ForeignKey, Boolean, Table, DateTime
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
@@ -110,3 +110,29 @@ class ProductAccounts(Base):
 
     def __str__(self) -> str:
         return self.cuenta
+    
+class User(Base):
+    __tablename__ = "auth_user"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    password = Column(String(128), nullable=False)
+    last_login = Column(DateTime(timezone=True), nullable=True)
+    is_superuser = Column(Boolean, nullable=False, default=False)
+    username = Column(String(150), unique=True, index=True, nullable=False)
+    first_name = Column(String(150), nullable=False, default="")
+    last_name = Column(String(150), nullable=False, default="")
+    email = Column(String(254), nullable=False, default="")
+    is_staff = Column(Boolean, nullable=False, default=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    date_joined = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class UserCustomized(Base):
+    __tablename__ = "user_customized_user_customized"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), unique=True, nullable=False)
+    phone_number = Column(String(50), nullable=False, default="")
+    avatar = Column(String(500), nullable=False, default="")
+
+    user = relationship("User", backref="custom_profile", lazy="joined")

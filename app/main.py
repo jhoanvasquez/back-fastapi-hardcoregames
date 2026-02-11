@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import auth
 from .routers import products
+from .routers import liked_games
 from .database import Base, engine
 
 app = FastAPI(title="Reactive FastAPI Microservice")
@@ -22,3 +23,4 @@ async def on_startup():
 
 app.include_router(products.router)
 app.include_router(auth.router)
+app.include_router(liked_games.router)

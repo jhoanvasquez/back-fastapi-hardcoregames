@@ -136,3 +136,15 @@ class UserCustomized(Base):
     avatar = Column(String(500), nullable=False, default="")
 
     user = relationship("User", backref="custom_profile", lazy="joined")
+
+
+class LikedGame(Base):
+    __tablename__ = "user_liked_games"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products_products.id_product"), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    user = relationship("User", backref="liked_games")
+    product = relationship("Product", backref="liked_by_users")

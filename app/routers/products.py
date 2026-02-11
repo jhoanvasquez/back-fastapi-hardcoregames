@@ -114,6 +114,95 @@ async def get_favorites(limit: int = 20, session: AsyncSession = Depends(get_ses
     return {"data": data}
 
 
+@router.get("/combination-price/{id_product}")
+async def get_combination_price_by_game(id_product: int, session: AsyncSession = Depends(get_session)):
+    """Get price combinations for a product.
+
+    Response model (per item in ``data``) matches:
+
+    {
+        "pk": int,
+        "consola": int,
+        "desc_console": str,
+        "licencia": int,
+        "desc_licence": str,
+        "stock": int,
+        "precio": int,
+        "precio_descuento": int,
+        "duracion_dias_alquiler": int,
+    }
+    """
+
+    # Obtener el tipo de producto (equivalente a product.type_id.id_product_type en Django)
+    result_product = await session.execute(
+        select(Product).filter(Product.id_product == id_product)
+    )
+    product = result_product.scalars().first()
+    product_type = getattr(product, "type_id_id", None) if product else None
+
+    # Traer cada GameDetail que cumpla las condiciones (sin agrupar),
+    # junto con descripciones de consola y licencia.
+    query = (
+        select(
+            GameDetail.id_game_detail,
+            GameDetail.consola_id,
+            Consoles.descripcion.label("desc_console"),
+            GameDetail.licencia_id,
+            Licenses.descripcion.label("desc_licence"),
+            GameDetail.duracion_dias_alquiler,
+            GameDetail.stock,
+            GameDetail.precio,
+            GameDetail.precio_descuento,
+        )
+        .select_from(GameDetail)
+        .join(Consoles, GameDetail.consola_id == Consoles.id_console, isouter=True)
+        .join(Licenses, GameDetail.licencia_id == Licenses.id_license, isouter=True)
+        .where(
+            GameDetail.producto_id == id_product,
+            GameDetail.stock > 0,
+            GameDetail.precio > 0,
+        )
+        .order_by(
+            GameDetail.consola_id,
+            GameDetail.licencia_id,
+            GameDetail.duracion_dias_alquiler,
+            GameDetail.precio.asc(),
+        )
+    )
+
+    result = await session.execute(query)
+    rows = result.all()
+
+    data = []
+    for row in rows:
+        precio = row.precio or 0
+        precio_descuento = row.precio_descuento or 0
+
+        data.append(
+            {
+                "pk": row.id_game_detail,
+                "consola": row.consola_id,
+                "desc_console": row.desc_console or "",
+                "licencia": row.licencia_id,
+                "desc_licence": row.desc_licence or "",
+                "stock": row.stock or 0,
+                "precio": precio,
+                "precio_descuento": precio_descuento,
+                "duracion_dias_alquiler": row.duracion_dias_alquiler,
+            }
+        )
+
+    payload = {
+        "message": "proceso exitoso",
+        "product_id": id_product,
+        "product_type": product_type,
+        "data": data,
+        "code": "00",
+        "status": 200,
+    }
+    return JSONResponse(payload)
+
+
 @router.get("/search")
 async def search_products(q: str, limit: int = 20, use_trgm: bool = False, session: AsyncSession = Depends(get_session)):
     if not q:

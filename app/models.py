@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, ForeignKey, Boolean, Table, DateTime
+from sqlalchemy import Column, Integer, String, Date, ForeignKey, Boolean, Table, DateTime, modifier, null
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
@@ -148,3 +148,34 @@ class LikedGame(Base):
 
     user = relationship("User", backref="liked_games")
     product = relationship("Product", backref="liked_by_users")
+
+
+class OrderBuy(Base):
+    __tablename__ = "orders_buy"
+
+    id_order = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products_gamedetail.id_game_detail"), nullable=False)
+    status = Column(String(50), nullable=False, default="pending")
+    file_path = Column(String(500), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    modified_at = Column(DateTime(timezone=True), nullable=True, default=None, onupdate=datetime.utcnow)
+
+    user = relationship("User", backref="orders_buy")
+    product = relationship("GameDetail", backref="orders_buy")
+
+
+class Coupon(Base):
+    __tablename__ = "coupons_coupon"
+
+    id_coupon = Column(Integer, primary_key=True, autoincrement=True)
+    name_coupon = Column(String(100), nullable=False, unique=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    modified_at = Column(DateTime(timezone=True), nullable=True, default=None, onupdate=datetime.utcnow)
+    expiration_date = Column(DateTime(timezone=True), nullable=False)
+    is_valid = Column(Boolean, nullable=False, default=True)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=True)
+    percentage_off = Column(Integer, nullable=False, default=0)
+    points_given = Column(Integer, nullable=False, default=0)
+
+    user = relationship("User", backref="coupons")

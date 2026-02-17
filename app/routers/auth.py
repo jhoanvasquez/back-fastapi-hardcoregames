@@ -2,8 +2,11 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel, EmailStr, constr
+from pydantic import BaseModel, EmailStr, constr, json
+from sqlalchemy.orm import selectinload
+from sqlalchemy import select 
 from app.database import get_session
+from app.models import LikedGame, Product
 from app.util.util_auth import (
     verify_password,
     create_access_token,
@@ -21,9 +24,15 @@ class UserRegister(BaseModel):
     email: EmailStr
     password: str
 
+class LikedProduct(BaseModel):
+    id_product: int
+    title: str
+    image: str | None = None
+
 class Token(BaseModel):
     access_token: str
     token_type: str
+    # liked_games: list[LikedProduct]
 
 
 class ForgotPasswordRequest(BaseModel):
@@ -49,7 +58,10 @@ async def register(user: UserRegister, session: AsyncSession = Depends(get_sessi
     return {"message": "User created successfully"}
 
 @router.post("/login", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), session: AsyncSession = Depends(get_session)):
+async def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    session: AsyncSession = Depends(get_session),
+):
     user = await auth_repo.get_user_by_username(session, username=form_data.username)
     if not user or not verify_password(form_data.password, user.password):
         raise HTTPException(
@@ -57,13 +69,40 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), session: Async
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
 
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+
+    query = (
+        select(LikedGame)
+        .options(selectinload(LikedGame.product))
+        .where(LikedGame.user_id == user.id)
+    )
+    result = await session.execute(query)
+    liked_games = result.scalars().all()
+
+    liked_data = [
+        LikedProduct(
+            id_product=lg.product.id_product,
+            title=lg.product.title,
+            image=lg.product.image,
+        )
+        for lg in liked_games
+        if isinstance(lg.product, Product)
+    ]
+
+    access_token = create_access_token(
+        data={
+            "sub": user.username, 
+            "user_id": user.id, 
+            "liked_game_ids": [lg.id_product for lg in liked_data],
+            }, 
+        expires_delta=access_token_expires
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
 
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, session: AsyncSession = Depends(get_session)):

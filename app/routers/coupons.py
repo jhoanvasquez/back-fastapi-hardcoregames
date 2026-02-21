@@ -36,6 +36,7 @@ async def get_coupon_by_name(
             "user_id": c.user_id,
             "percentage_off": c.percentage_off,
             "points_given": c.points_given,
+            "product_id": c.product_id,
         }
         for c in coupons
     ]

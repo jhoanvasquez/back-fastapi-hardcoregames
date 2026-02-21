@@ -6,7 +6,7 @@ from pydantic import BaseModel, EmailStr, constr, json
 from sqlalchemy.orm import selectinload
 from sqlalchemy import select 
 from app.database import get_session
-from app.models import LikedGame, Product
+from app.models import LikedGame, Product, User
 from app.util.util_auth import (
     verify_password,
     create_access_token,
@@ -14,6 +14,7 @@ from app.util.util_auth import (
     generate_reset_token,
     verify_reset_token,
     RESET_TOKEN_EXPIRE_SECONDS,
+    get_current_user,
 )
 from app.repositories import auth as auth_repo
 
@@ -23,6 +24,8 @@ class UserRegister(BaseModel):
     username: str
     email: EmailStr
     password: str
+    phone_number: str | None = ""
+    avatar: str | None = ""
 
 class LikedProduct(BaseModel):
     id_product: int
@@ -32,6 +35,7 @@ class LikedProduct(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+    is_superuser: bool
     # liked_games: list[LikedProduct]
 
 
@@ -54,7 +58,14 @@ async def register(user: UserRegister, session: AsyncSession = Depends(get_sessi
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    await auth_repo.create_user(session, username=user.username, email=user.email, password=user.password)
+    await auth_repo.create_user(
+        session,
+        username=user.username,
+        email=user.email,
+        password=user.password,
+        phone_number=user.phone_number or "",
+        avatar=user.avatar or "",
+    )
     return {"message": "User created successfully"}
 
 @router.post("/login", response_model=Token)
@@ -95,13 +106,55 @@ async def login(
             "sub": user.username, 
             "user_id": user.id, 
             "liked_game_ids": [lg.id_product for lg in liked_data],
+            "is_superuser": bool(getattr(user, "is_superuser", False)),
             }, 
         expires_delta=access_token_expires
     )
 
     return {
         "access_token": access_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "is_superuser": bool(getattr(user, "is_superuser", False)),
+    }
+
+
+@router.post("/refresh", response_model=Token)
+async def refresh_token(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Issue a new access token for the currently authenticated user."""
+
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+
+    query = (
+        select(LikedGame)
+        .options(selectinload(LikedGame.product))
+        .where(LikedGame.user_id == current_user.id)
+    )
+    result = await session.execute(query)
+    liked_games = result.scalars().all()
+
+    liked_ids = [
+        lg.product.id_product
+        for lg in liked_games
+        if isinstance(lg.product, Product)
+    ]
+
+    access_token = create_access_token(
+        data={
+            "sub": current_user.username,
+            "user_id": current_user.id,
+            "liked_game_ids": liked_ids,
+            "is_superuser": bool(getattr(current_user, "is_superuser", False)),
+        },
+        expires_delta=access_token_expires,
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "is_superuser": bool(getattr(current_user, "is_superuser", False)),
     }
 
 @router.post("/forgot-password")

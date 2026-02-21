@@ -134,6 +134,7 @@ class UserCustomized(Base):
     user_id = Column(Integer, ForeignKey("auth_user.id"), unique=True, nullable=False)
     phone_number = Column(String(50), nullable=False, default="")
     avatar = Column(String(500), nullable=False, default="")
+    puntos = Column(Integer, nullable=False, default=0)
 
     user = relationship("User", backref="custom_profile", lazy="joined")
 
@@ -165,6 +166,18 @@ class OrderBuy(Base):
     product = relationship("GameDetail", backref="orders_buy")
 
 
+class ShoppingCar(Base):
+    __tablename__ = "products_shoppingcar"
+
+    id_shopping_car = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column("usuario_id", Integer, ForeignKey("auth_user.id"), nullable=False)
+    product_id = Column("producto_id", Integer, ForeignKey("products_gamedetail.id_game_detail"), nullable=False)
+    estado = Column(Boolean, nullable=False, default=True)
+
+    user = relationship("User", backref="shopping_cars")
+    product = relationship("GameDetail", backref="shopping_cars")
+
+
 class Coupon(Base):
     __tablename__ = "coupons_coupon"
 
@@ -177,5 +190,7 @@ class Coupon(Base):
     user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=True)
     percentage_off = Column(Integer, nullable=False, default=0)
     points_given = Column(Integer, nullable=False, default=0)
+    product_id = Column(Integer, ForeignKey("products_products.id_product"), nullable=True)
 
     user = relationship("User", backref="coupons")
+    product = relationship("Product", backref="coupons")

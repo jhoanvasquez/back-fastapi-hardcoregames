@@ -13,10 +13,17 @@ router = APIRouter(prefix="/products", tags=["products"])
 
 
 @router.get("/")
-async def list_products(session: AsyncSession = Depends(get_session)):
-    result = await session.execute(
-        select(Product).options(selectinload(Product.consoles)).order_by(Product.id_product)
-    )
+async def list_products(
+    search: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    query = select(Product).options(selectinload(Product.consoles)).order_by(Product.id_product)
+
+    if search:
+        pattern = f"%{search}%"
+        query = query.where(Product.title.ilike(pattern))
+
+    result = await session.execute(query)
     products = result.scalars().all()
 
     data = [
@@ -322,3 +329,52 @@ async def get_product_by_id(id_product: int, session: AsyncSession = Depends(get
 
     payload = {'message': 'proceso exitoso', 'data': data, 'code': '00', 'status': 200}
     return JSONResponse(payload)
+
+
+@router.get("/{id_product}/related")
+async def get_related_products(id_product: int, limit: int = 10, session: AsyncSession = Depends(get_session)):
+    """Return products related to the given product.
+
+    Relation is defined as sharing the same ``tipo_juego_id`` and excluding the
+    product itself. Results are limited (default 10).
+    """
+
+    # Get base product
+    result = await session.execute(select(Product).filter(Product.id_product == id_product))
+    product = result.scalars().first()
+    if not product:
+        return {"data": []}
+
+    tipo_juego_id = getattr(product, "tipo_juego_id", None)
+    if not tipo_juego_id:
+        return {"data": []}
+
+    related_query = (
+        select(Product)
+        .where(
+            Product.tipo_juego_id == tipo_juego_id,
+            Product.id_product != id_product,
+        )
+        .order_by(Product.calification.desc())
+        .limit(limit)
+    )
+
+    rel_result = await session.execute(related_query)
+    related_products = rel_result.scalars().all()
+
+    data = [
+        {
+            "id_product": p.id_product,
+            "title": p.title,
+            "description": p.description,
+            "date_register": p.date_register.isoformat() if getattr(p, "date_register", None) else None,
+            "image": p.image,
+            "calification": p.calification,
+            "puntos_venta": p.puntos_venta,
+            "puede_rentarse": p.puede_rentarse,
+            "destacado": p.destacado,
+        }
+        for p in related_products
+    ]
+
+    return {"data": data}

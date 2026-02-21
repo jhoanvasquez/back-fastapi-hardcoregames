@@ -36,6 +36,57 @@ class OrderBuyRead(BaseModel):
         orm_mode = True
 
 
+@router.get("/admin", response_model=list[OrderBuyRead])
+async def list_all_orders_paginated(
+    page: int = 1,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Return all orders, 20 per page, only for superusers.
+
+    Uses JWT session token via get_current_user and checks current_user.is_superuser.
+    """
+
+    if not bool(getattr(current_user, "is_superuser", False)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to list all orders",
+        )
+
+    page_size = 20
+    if page < 1:
+        page = 1
+    offset = (page - 1) * page_size
+
+    result = await session.execute(
+        select(OrderBuy, GameDetail, Product)
+        .join(GameDetail, OrderBuy.product_id == GameDetail.id_game_detail)
+        .join(Product, GameDetail.producto_id == Product.id_product)
+        .order_by(OrderBuy.id_order.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    rows = result.all()
+
+    return [
+        {
+            "id_order": order.id_order,
+            "user_id": order.user_id,
+            "product_id": order.product_id,
+            "status": order.status,
+            "file_path": order.file_path,
+            "product": {
+                "id_game_detail": gd.id_game_detail,
+                "id_product": p.id_product,
+                "title": p.title,
+                "description": p.description,
+                "image": p.image,
+            },
+        }
+        for order, gd, p in rows
+    ]
+
+
 @router.get("/", response_model=list[OrderBuyRead])
 async def list_orders(
     session: AsyncSession = Depends(get_session),

@@ -41,11 +41,14 @@ class OrderBuyRepository:
         *,
         status: str | None = None,
         file_path: str | None = None,
+        description_order: str | None = None,
     ) -> OrderBuy:
         if status is not None:
             order.status = status
         if file_path is not None:
             order.file_path = file_path
+        if description_order is not None:
+            order.description_order = description_order
         session.add(order)
         await session.commit()
         await session.refresh(order)

@@ -92,18 +92,20 @@ async def like_game(
     }
 
 
-@router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{liked_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_liked_game(
-    product_id: int,
+    liked_id: int,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Delete a liked game for the current authenticated user by product_id."""
+    """Delete a liked game for the current authenticated user by liked_id."""
 
     query = select(LikedGame).where(
         LikedGame.user_id == current_user.id,
-        LikedGame.product_id == product_id,
+        LikedGame.id == liked_id,
     )
+    print(f"Executing query to find liked game: {query}")
+    print(f"Current user ID: {current_user.id}, Liked ID to delete: {liked_id}")
     result = await session.execute(query)
     liked_game = result.scalars().first()
 

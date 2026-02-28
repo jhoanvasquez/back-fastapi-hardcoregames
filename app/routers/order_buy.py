@@ -30,10 +30,16 @@ class OrderBuyRead(BaseModel):
     product_id: int
     status: str
     file_path: str | None = None
+    description_order: str | None = None
     product: ProductInfo | None = None
 
     class Config:
         orm_mode = True
+
+
+class OrderBuyPatch(BaseModel):
+    status: str | None = None
+    description_order: str | None = None
 
 
 @router.get("/admin", response_model=list[OrderBuyRead])
@@ -75,6 +81,7 @@ async def list_all_orders_paginated(
             "product_id": order.product_id,
             "status": order.status,
             "file_path": order.file_path,
+            "description_order": order.description_order,
             "product": {
                 "id_game_detail": gd.id_game_detail,
                 "id_product": p.id_product,
@@ -107,6 +114,7 @@ async def list_orders(
             "product_id": order.product_id,
             "status": order.status,
             "file_path": order.file_path,
+            "description_order": order.description_order,
             "product": {
                 "id_game_detail": gd.id_game_detail,
                 "id_product": p.id_product,
@@ -137,6 +145,7 @@ async def get_order(order_id: int, session: AsyncSession = Depends(get_session))
         "product_id": order.product_id,
         "status": order.status,
         "file_path": order.file_path,
+        "description_order": order.description_order,
         "product": {
             "id_game_detail": gd.id_game_detail,
             "id_product": p.id_product,
@@ -179,6 +188,7 @@ async def create_order(
         "product_id": order.product_id,
         "status": order.status,
         "file_path": order.file_path,
+        "description_order": order.description_order,
         "product": {
             "id_game_detail": game_detail.id_game_detail,
             "id_product": product.id_product if product else None,
@@ -221,6 +231,57 @@ async def update_order(
         "product_id": updated.product_id,
         "status": updated.status,
         "file_path": updated.file_path,
+        "product": {
+            "id_game_detail": game_detail.id_game_detail if game_detail else None,
+            "id_product": product.id_product if product else None,
+            "title": product.title if product else "",
+            "description": product.description if product else "",
+            "image": product.image if product else None,
+        } if game_detail else None,
+    }
+
+
+@router.patch("/{order_id}", response_model=OrderBuyRead)
+async def patch_order(
+    order_id: int,
+    patch: OrderBuyPatch,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Partially update an order (status / description_order).
+
+    Accepts JSON body, e.g.:
+    {
+        "status": "pending",
+        "description_order": "wqw"
+    }
+    """
+
+    order = await OrderBuyRepository.get_by_id(session, order_id)
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    if order.user_id != current_user.id and not getattr(current_user, "is_superuser", False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to modify this order")
+
+    updated = await OrderBuyRepository.update(
+        session=session,
+        order=order,
+        status=patch.status,
+        file_path=None,  # keep existing file_path unless changed via PUT
+        description_order=patch.description_order,
+    )
+
+    game_detail = await session.get(GameDetail, updated.product_id)
+    product = await session.get(Product, game_detail.producto_id) if game_detail else None
+
+    return {
+        "id_order": updated.id_order,
+        "user_id": updated.user_id,
+        "product_id": updated.product_id,
+        "status": updated.status,
+        "file_path": updated.file_path,
+        "description_order": updated.description_order,
         "product": {
             "id_game_detail": game_detail.id_game_detail if game_detail else None,
             "id_product": product.id_product if product else None,

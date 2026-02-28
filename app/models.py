@@ -161,6 +161,7 @@ class OrderBuy(Base):
     file_path = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     modified_at = Column(DateTime(timezone=True), nullable=True, default=None, onupdate=datetime.utcnow)
+    description_order = Column(String(500), nullable=False, default="")
 
     user = relationship("User", backref="orders_buy")
     product = relationship("GameDetail", backref="orders_buy")

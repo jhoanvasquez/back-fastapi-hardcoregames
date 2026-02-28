@@ -1,13 +1,16 @@
-from fastapi import APIRouter, Depends
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import StreamingResponse, JSONResponse
 import json
 import asyncio
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, cast, Integer
 from sqlalchemy.orm import selectinload
 from ..database import get_session
 from ..repositories.products import ProductRepository
-from ..models import Product, GameDetail, Consoles, Licenses
+from ..models import Product, GameDetail, Consoles, Licenses, Coupon, User
+from ..util.util_auth import get_current_user
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -38,6 +41,7 @@ async def list_products(
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "type_id": p.type_id_id,
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -121,19 +125,159 @@ async def get_favorites(limit: int = 20, session: AsyncSession = Depends(get_ses
     return {"data": data}
 
 
+@router.get("/by-type/{type_id}")
+async def get_products_by_type(
+    type_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """List products filtered by ``type_id_id``.
+
+    Returns the same basic structure as the main /products list
+    endpoint, but only for products where Product.type_id_id
+    matches the given ``type_id``.
+    """
+
+    # Database column is numeric; cast model field to Integer for safe comparison
+    query = (
+        select(Product)
+        .options(selectinload(Product.consoles))
+        .where(cast(Product.type_id_id, Integer) == type_id)
+        .order_by(Product.id_product)
+    )
+
+    result = await session.execute(query)
+    products = result.scalars().all()
+
+    data = [
+        {
+            "id_product": p.id_product,
+            "title": p.title,
+            "description": p.description,
+            "date_register": p.date_register.isoformat() if getattr(p, "date_register", None) else None,
+            "date_last_modified": p.date_last_modified.isoformat() if getattr(p, "date_last_modified", None) else None,
+            "image": p.image,
+            "calification": p.calification,
+            "puntos_venta": p.puntos_venta,
+            "puede_rentarse": p.puede_rentarse,
+            "destacado": p.destacado,
+            "consoles": [
+                {"id_console": c.id_console}
+                for c in getattr(p, "consoles", []) or []
+            ],
+        }
+        for p in products
+    ]
+    return {"data": data}
+
+
+@router.get("/by-console/{console_id}")
+async def get_products_by_console(
+    console_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """List products filtered by console (platform).
+
+    Returns the same basic structure as the main /products list
+    endpoint, but only for products associated with the given
+    ``console_id``.
+    """
+
+    query = (
+        select(Product)
+        .join(Product.consoles)
+        .options(selectinload(Product.consoles))
+        .where(Consoles.id_console == console_id)
+        .order_by(Product.id_product)
+    )
+
+    result = await session.execute(query)
+    products = result.scalars().all()
+
+    data = [
+        {
+            "id_product": p.id_product,
+            "title": p.title,
+            "description": p.description,
+            "date_register": p.date_register.isoformat() if getattr(p, "date_register", None) else None,
+            "date_last_modified": p.date_last_modified.isoformat() if getattr(p, "date_last_modified", None) else None,
+            "image": p.image,
+            "calification": p.calification,
+            "puntos_venta": p.puntos_venta,
+            "puede_rentarse": p.puede_rentarse,
+            "destacado": p.destacado,
+            "type_id": p.type_id_id,
+            "consoles": [
+                {"id_console": c.id_console}
+                for c in getattr(p, "consoles", []) or []
+            ],
+        }
+        for p in products
+    ]
+    return {"data": data}
+
+
+@router.get("/by-game-type/{game_type_id}")
+async def get_products_by_game_type(
+    game_type_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """List products filtered by ``tipo_juego_id`` (game type).
+
+    Returns the same basic structure as the main /products list
+    endpoint, but only for products where Product.tipo_juego_id
+    matches the given ``game_type_id``.
+    """
+
+    query = (
+        select(Product)
+        .options(selectinload(Product.consoles))
+        .where(cast(Product.tipo_juego_id, Integer) == game_type_id)
+        .order_by(Product.id_product)
+    )
+
+    result = await session.execute(query)
+    products = result.scalars().all()
+
+    data = [
+        {
+            "id_product": p.id_product,
+            "title": p.title,
+            "description": p.description,
+            "date_register": p.date_register.isoformat() if getattr(p, "date_register", None) else None,
+            "date_last_modified": p.date_last_modified.isoformat() if getattr(p, "date_last_modified", None) else None,
+            "image": p.image,
+            "calification": p.calification,
+            "puntos_venta": p.puntos_venta,
+            "puede_rentarse": p.puede_rentarse,
+            "destacado": p.destacado,
+            "type_id": p.type_id_id,
+            "consoles": [
+                {"id_console": c.id_console}
+                for c in getattr(p, "consoles", []) or []
+            ],
+        }
+        for p in products
+    ]
+    return {"data": data}
+
+
 @router.get("/combination-price/{id_product}")
 async def get_combination_price_by_game(id_product: int, session: AsyncSession = Depends(get_session)):
-    """Get price combinations for a product.
+    """Get optimized price combinations for a product.
 
-    Response model (per item in ``data``) matches:
+    The response groups game details by the combination of
+    (``consola``, ``licencia``, ``duracion_dias_alquiler``, ``precio``,
+    ``precio_descuento``) and aggregates their stock.
+
+    Each item in ``data`` has the shape:
 
     {
-        "pk": int,
+        "pk": int,  # representative id_game_detail for the group
         "consola": int,
         "desc_console": str,
         "licencia": int,
         "desc_licence": str,
-        "stock": int,
+        "stock": int,  # total stock for that combination
         "precio": int,
         "precio_descuento": int,
         "duracion_dias_alquiler": int,
@@ -180,13 +324,24 @@ async def get_combination_price_by_game(id_product: int, session: AsyncSession =
     result = await session.execute(query)
     rows = result.all()
 
-    data = []
+    # Group by (consola, desc_console, licencia, desc_licence,
+    #           duracion_dias_alquiler, precio, precio_descuento)
+    groups: dict[tuple, dict] = {}
     for row in rows:
         precio = row.precio or 0
         precio_descuento = row.precio_descuento or 0
+        key = (
+            row.consola_id,
+            row.desc_console or "",
+            row.licencia_id,
+            row.desc_licence or "",
+            row.duracion_dias_alquiler,
+            precio,
+            precio_descuento,
+        )
 
-        data.append(
-            {
+        if key not in groups:
+            groups[key] = {
                 "pk": row.id_game_detail,
                 "consola": row.consola_id,
                 "desc_console": row.desc_console or "",
@@ -197,7 +352,10 @@ async def get_combination_price_by_game(id_product: int, session: AsyncSession =
                 "precio_descuento": precio_descuento,
                 "duracion_dias_alquiler": row.duracion_dias_alquiler,
             }
-        )
+        else:
+            groups[key]["stock"] += row.stock or 0
+
+    data = list(groups.values())
 
     payload = {
         "message": "proceso exitoso",
@@ -235,6 +393,7 @@ async def search_products(q: str, limit: int = 20, use_trgm: bool = False, sessi
             "image": p.image,
             "calification": p.calification,
             "puntos_venta": p.puntos_venta,
+            "type_id": p.type_id_id,
         }
         for p in products
     ]
@@ -303,7 +462,7 @@ async def get_product_by_id(id_product: int, session: AsyncSession = Depends(get
             "desc_licence": row.desc_licence or "",
             "stock": row.stock,
             "precio": row.precio,
-            "precio_descuento": row.precio_descuento,
+            "originalPrice": row.precio_descuento,
             "duracion_dias_alquiler": row.duracion_dias_alquiler,
         }
         for row in rows
@@ -378,3 +537,63 @@ async def get_related_products(id_product: int, limit: int = 10, session: AsyncS
     ]
 
     return {"data": data}
+
+
+@router.get("/coupon/{code}")
+async def validate_coupon_for_product(
+    code: str,
+    product_id: int,
+    user_id: int | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Validate a coupon code for a specific product (optionally for a user).
+
+    - Path: /products/coupon/{code}
+    - Query params: product_id (required), user_id (optional)
+    - Does **not** use JWT; caller must pass user_id explicitly
+    - Coupon is considered valid when:
+        * name_coupon matches code (case-sensitive)
+        * product_id matches
+        * (user_id is NULL or equals given user_id)
+        * is_valid is True
+        * expiration_date is in the future
+    """
+
+    now = datetime.utcnow()
+
+    # user_id is optional; allow coupons that are generic (NULL) or match given user
+    user_condition = or_(Coupon.user_id.is_(None), Coupon.user_id == user_id)
+
+    query = (
+        select(Coupon)
+        .where(
+            Coupon.name_coupon == code,
+            Coupon.product_id == product_id,
+            Coupon.is_valid.is_(True),
+            Coupon.expiration_date > now,
+            user_condition,
+        )
+        .limit(1)
+    )
+
+    result = await session.execute(query)
+    coupon = result.scalars().first()
+
+    if not coupon:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Coupon not valid for this product or user",
+        )
+
+    return {
+        "id_coupon": coupon.id_coupon,
+        "name_coupon": coupon.name_coupon,
+        "product_id": coupon.product_id,
+        "user_id": coupon.user_id,
+        "percentage_off": coupon.percentage_off,
+        "points_given": coupon.points_given,
+        "created_at": coupon.created_at.isoformat() if coupon.created_at else None,
+        "modified_at": coupon.modified_at.isoformat() if coupon.modified_at else None,
+        "expiration_date": coupon.expiration_date.isoformat() if coupon.expiration_date else None,
+        "is_valid": coupon.is_valid,
+    }

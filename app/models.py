@@ -156,15 +156,18 @@ class OrderBuy(Base):
 
     id_order = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=False)
-    product_id = Column(Integer, ForeignKey("products_gamedetail.id_game_detail"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products_products.id_product"), nullable=False)
     status = Column(String(50), nullable=False, default="pending")
     file_path = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     modified_at = Column(DateTime(timezone=True), nullable=True, default=None, onupdate=datetime.utcnow)
     description_order = Column(String(500), nullable=False, default="")
 
+    id_license = Column(Integer, ForeignKey("products_licenses.id_license"), nullable=True)
+    id_console = Column(Integer, ForeignKey("products_consoles.id_console"), nullable=True)
+
     user = relationship("User", backref="orders_buy")
-    product = relationship("GameDetail", backref="orders_buy")
+    product = relationship("Product", backref="orders")
 
 
 class ShoppingCar(Base):

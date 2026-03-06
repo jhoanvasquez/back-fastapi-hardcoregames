@@ -129,6 +129,7 @@ async def get_favorites(limit: int = 20, session: AsyncSession = Depends(get_ses
 async def get_products_by_type(
     type_id: int,
     session: AsyncSession = Depends(get_session),
+    limit: int = 20,
 ):
     """List products filtered by ``type_id_id``.
 
@@ -143,6 +144,7 @@ async def get_products_by_type(
         .options(selectinload(Product.consoles))
         .where(cast(Product.type_id_id, Integer) == type_id)
         .order_by(Product.id_product)
+        .limit(limit)
     )
 
     result = await session.execute(query)
@@ -174,6 +176,7 @@ async def get_products_by_type(
 async def get_products_by_console(
     console_id: int,
     session: AsyncSession = Depends(get_session),
+    limit: int = 20,
 ):
     """List products filtered by console (platform).
 
@@ -188,6 +191,7 @@ async def get_products_by_console(
         .options(selectinload(Product.consoles))
         .where(Consoles.id_console == console_id)
         .order_by(Product.id_product)
+        .limit(limit)
     )
 
     result = await session.execute(query)
@@ -219,6 +223,7 @@ async def get_products_by_console(
 @router.get("/by-game-type/{game_type_id}")
 async def get_products_by_game_type(
     game_type_id: int,
+    limit: int = 20,
     session: AsyncSession = Depends(get_session),
 ):
     """List products filtered by ``tipo_juego_id`` (game type).
@@ -233,6 +238,7 @@ async def get_products_by_game_type(
         .options(selectinload(Product.consoles))
         .where(cast(Product.tipo_juego_id, Integer) == game_type_id)
         .order_by(Product.id_product)
+        .limit(limit)
     )
 
     result = await session.execute(query)

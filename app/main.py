@@ -24,6 +24,13 @@ async def on_startup():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+
+@app.get("/health")
+async def health_check():
+    """Simple health endpoint that logs a message on each call."""
+    print("[health] backend is alive")
+    return {"status": "ok"}
+
 app.include_router(products.router)
 app.include_router(auth.router)
 app.include_router(liked_games.router)

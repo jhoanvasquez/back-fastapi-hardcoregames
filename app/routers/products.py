@@ -15,6 +15,28 @@ from ..util.util_auth import get_current_user
 router = APIRouter(prefix="/products", tags=["products"])
 
 
+async def _get_min_prices_for_products(session: AsyncSession, product_ids: list[int]) -> dict[int, float | None]:
+    """Return a mapping product_id -> minimum GameDetail.precio (>0).
+
+    If a product has no GameDetail with precio > 0, it will not
+    appear in the mapping and the caller can treat its price as None.
+    """
+    if not product_ids:
+        return {}
+
+    result = await session.execute(
+        select(GameDetail.producto_id, func.min(GameDetail.precio))
+        .where(
+            GameDetail.producto_id.in_(product_ids),
+            GameDetail.precio > 0,
+        )
+        .group_by(GameDetail.producto_id)
+    )
+
+    rows = result.all()
+    return {producto_id: min_price for producto_id, min_price in rows}
+
+
 @router.get("/")
 async def list_products(
     search: str | None = None,
@@ -28,6 +50,8 @@ async def list_products(
 
     result = await session.execute(query)
     products = result.scalars().all()
+    product_ids = [p.id_product for p in products]
+    min_prices = await _get_min_prices_for_products(session, product_ids)
 
     data = [
         {
@@ -42,6 +66,7 @@ async def list_products(
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
             "type_id": p.type_id_id,
+            "price": min_prices.get(p.id_product),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -62,14 +87,24 @@ async def stream_numbers():
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+
 @router.get("/pagination")
-async def get_products(after_id: int | None = None, limit: int = 10, session: AsyncSession = Depends(get_session)):
+async def get_products(offset: int = 0, limit: int = 10, session: AsyncSession = Depends(get_session)):
+    """Paginate products using classic offset/limit.
+
+    - Query params:
+        * offset: number of items to skip (default 0)
+        * limit: max number of items to return (default 10)
+    """
+
     query = select(Product).order_by(Product.id_product)
-    if after_id:
-        query = query.filter(Product.id_product > after_id)
+    if offset:
+        query = query.offset(offset)
     query = query.limit(limit)
     result = await session.execute(query)
     products = result.scalars().all()
+    product_ids = [p.id_product for p in products]
+    min_prices = await _get_min_prices_for_products(session, product_ids)
 
     data = [
         {
@@ -85,6 +120,7 @@ async def get_products(after_id: int | None = None, limit: int = 10, session: As
             "destacado": p.destacado,
             "type_id_id": p.type_id_id,
             "tipo_juego_id": p.tipo_juego_id,
+            "price": min_prices.get(p.id_product),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -96,13 +132,18 @@ async def get_products(after_id: int | None = None, limit: int = 10, session: As
 
 
 @router.get("/favorites")
-async def get_favorites(limit: int = 20, session: AsyncSession = Depends(get_session)):
+async def get_favorites(limit: int = 20, offset: int = 0, session: AsyncSession = Depends(get_session)):
     """
     Obtener productos marcados como favoritos (destacado=True) ordenados por calification (desc).
     """
-    query = select(Product).where(Product.destacado.is_(True)).order_by(Product.calification.desc()).limit(limit)
+    query = select(Product).where(Product.destacado.is_(True)).order_by(Product.calification.desc())
+    if offset:
+        query = query.offset(offset)
+    query = query.limit(limit)
     result = await session.execute(query)
     products = result.scalars().all()
+    product_ids = [p.id_product for p in products]
+    min_prices = await _get_min_prices_for_products(session, product_ids)
 
     # serializar a dicts simples para respuesta JSON
     data = [
@@ -116,8 +157,8 @@ async def get_favorites(limit: int = 20, session: AsyncSession = Depends(get_ses
             "calification": p.calification,
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
-            "destacado": p.destacado
-
+            "destacado": p.destacado,
+            "price": min_prices.get(p.id_product),
         }
         for p in products
     ]
@@ -264,6 +305,77 @@ async def get_products_by_game_type(
         }
         for p in products
     ]
+    return {"data": data}
+
+
+@router.get("/filter")
+async def filter_products(
+    type_id: int | None = None,
+    console_id: int | None = None,
+    game_type_id: int | None = None,
+    offset: int = 0,
+    limit: int = 20,
+    session: AsyncSession = Depends(get_session),
+):
+    """Filter products by optional type, console and game type.
+
+    - Query params (all optional):
+        * type_id: filters by Product.type_id_id
+        * console_id: filters by Consoles.id_console
+        * game_type_id: filters by Product.tipo_juego_id
+    If any param is omitted or null, that filter is not applied.
+    Supports offset/limit pagination.
+    """
+
+    query = select(Product).options(selectinload(Product.consoles))
+    conditions = []
+
+    if type_id is not None:
+        conditions.append(cast(Product.type_id_id, Integer) == type_id)
+
+    if game_type_id is not None:
+        conditions.append(cast(Product.tipo_juego_id, Integer) == game_type_id)
+
+    if console_id is not None:
+        query = query.join(Product.consoles)
+        conditions.append(Consoles.id_console == console_id)
+
+    if conditions:
+        query = query.where(*conditions)
+
+    query = query.order_by(Product.id_product)
+    if offset:
+        query = query.offset(offset)
+    query = query.limit(limit)
+
+    result = await session.execute(query)
+    products = result.scalars().all()
+    product_ids = [p.id_product for p in products]
+    min_prices = await _get_min_prices_for_products(session, product_ids)
+
+    data = [
+        {
+            "id_product": p.id_product,
+            "title": p.title,
+            "description": p.description,
+            "date_register": p.date_register.isoformat() if getattr(p, "date_register", None) else None,
+            "date_last_modified": p.date_last_modified.isoformat() if getattr(p, "date_last_modified", None) else None,
+            "image": p.image,
+            "calification": p.calification,
+            "puntos_venta": p.puntos_venta,
+            "puede_rentarse": p.puede_rentarse,
+            "destacado": p.destacado,
+            "type_id_id": p.type_id_id,
+            "tipo_juego_id": p.tipo_juego_id,
+            "price": min_prices.get(p.id_product),
+            "consoles": [
+                {"id_console": c.id_console}
+                for c in getattr(p, "consoles", []) or []
+            ],
+        }
+        for p in products
+    ]
+
     return {"data": data}
 
 

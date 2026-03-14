@@ -73,6 +73,12 @@ class ResetPasswordRequest(BaseModel):
     new_password: constr(min_length=8)
     confirm_password: constr(min_length=8)
 
+
+class PointsExchangeResponse(BaseModel):
+    exchanged_points: int
+    amount_cop: int
+    remaining_points: int
+
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(user: UserRegister, session: AsyncSession = Depends(get_session)):
     db_user = await auth_repo.get_user_by_username(session, username=user.username)
@@ -351,3 +357,43 @@ async def patch_profile(
         "last_name": user.last_name,
         "phone_number": getattr(profile, "phone_number", ""),
     }
+
+
+@router.post("/exchange-points", response_model=PointsExchangeResponse)
+async def exchange_points(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Exchange user points for COP.
+
+    - Each point = 1 COP.
+    - User can exchange only if they have at least 2000 points.
+    - All available points are exchanged in one operation.
+    """
+
+    # Load or create the customized profile to access puntos
+    result = await session.execute(
+        select(UserCustomized).where(UserCustomized.user_id == current_user.id)
+    )
+    profile = result.scalars().first()
+
+    if profile is None or profile.puntos < 2000:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Not enough points to exchange (minimum 2000)",
+        )
+
+    exchanged_points = profile.puntos
+    amount_cop = exchanged_points  # 1 point == 1 COP
+
+    profile.puntos = 0
+    current_balance = getattr(profile, "balance_exchange", 0) or 0
+    profile.balance_exchange = current_balance + amount_cop
+    session.add(profile)
+    await session.commit()
+
+    return PointsExchangeResponse(
+        exchanged_points=exchanged_points,
+        amount_cop=amount_cop,
+        remaining_points=profile.puntos,
+    )

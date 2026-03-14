@@ -1,7 +1,8 @@
-from sqlalchemy import Column, Integer, String, Date, ForeignKey, Boolean, Table, DateTime, modifier, null
+from sqlalchemy import Column, Integer, String, Date, ForeignKey, Boolean, Table, DateTime, BigInteger
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
+from sqlalchemy.dialects.postgresql import JSONB
 
 products_products_consola = Table(
     "products_products_consola", Base.metadata,
@@ -135,6 +136,7 @@ class UserCustomized(Base):
     phone_number = Column(String(50), nullable=False, default="")
     avatar = Column(String(500), nullable=False, default="")
     puntos = Column(Integer, nullable=False, default=0)
+    balance_exchange = Column(Integer, nullable=False, default=0)
 
     user = relationship("User", backref="custom_profile", lazy="joined")
 
@@ -170,6 +172,23 @@ class OrderBuy(Base):
     product = relationship("Product", backref="orders")
 
 
+class SaleDetail(Base):
+    __tablename__ = "products_saledetail"
+
+    id_sale_detail = Column(Integer, primary_key=True, autoincrement=True)
+    fecha_venta = Column(DateTime(timezone=True), nullable=False)
+    fecha_vencimiento = Column(Date, nullable=True)
+    cuenta_id = Column(Integer, ForeignKey("products_productaccounts.id_product_accounts"), nullable=True)
+    producto_id = Column(Integer, ForeignKey("products_products.id_product"), nullable=True)
+    usuario_id = Column(Integer, ForeignKey("auth_user.id"), nullable=True)
+    combinacion_id = Column(Integer, ForeignKey("products_gamedetail.id_game_detail"), nullable=True)
+
+    cuenta = relationship("ProductAccounts", backref="sale_details")
+    producto = relationship("Product", backref="sale_details")
+    usuario = relationship("User", backref="sale_details")
+    combinacion = relationship("GameDetail", backref="sale_details")
+
+
 class ShoppingCar(Base):
     __tablename__ = "products_shoppingcar"
 
@@ -198,3 +217,41 @@ class Coupon(Base):
 
     user = relationship("User", backref="coupons")
     product = relationship("Product", backref="coupons")
+
+
+class CouponRule(Base):
+    """Business rule attached to a coupon (Django-managed table).
+
+    This mirrors the ``products_couponrule`` model in the Django ``products`` app
+    and is used only for reads from the FastAPI side.
+    """
+
+    __tablename__ = "products_couponrule"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    coupon_id = Column(Integer, ForeignKey("coupons_coupon.id_coupon"), nullable=False)
+    rule_type = Column(String(50), nullable=False)
+    operator = Column(String(10), nullable=False)
+    value = Column(JSONB, nullable=False)
+
+    coupon = relationship("Coupon", backref="rules")
+
+
+class CouponRedemption(Base):
+    """Redemption log for coupons (Django-managed table).
+
+    Records each time a coupon is actually redeemed in an order. This table is
+    *not* written from FastAPI in this endpoint; it is only queried to enforce
+    usage limits.
+    """
+
+    __tablename__ = "products_couponredemption"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    coupon_id = Column(Integer, ForeignKey("coupons_coupon.id_coupon"), nullable=False)
+    user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=False)
+    order_id = Column(String(100), nullable=False)
+    redeemed_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    coupon = relationship("Coupon", backref="redemptions")
+    user = relationship("User", backref="coupon_redemptions")

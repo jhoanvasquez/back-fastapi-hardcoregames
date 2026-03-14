@@ -1,18 +1,63 @@
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import StreamingResponse, JSONResponse
-import json
+from pydantic import BaseModel
 import asyncio
 from sqlalchemy import select, func, or_, cast, Integer
 from sqlalchemy.orm import selectinload
 from ..database import get_session
-from ..repositories.products import ProductRepository
-from ..models import Product, GameDetail, Consoles, Licenses, Coupon, User
+from ..models import (
+    Product,
+    GameDetail,
+    Consoles,
+    Licenses,
+    Coupon,
+    User,
+    SaleDetail,
+    CouponRule,
+    CouponRedemption,
+)
 from ..util.util_auth import get_current_user
 
 router = APIRouter(prefix="/products", tags=["products"])
+
+
+class CartItem(BaseModel):
+    """Single item in the cart used for coupon validation."""
+
+    product_id: int
+    quantity: int
+    unit_price: float
+
+
+class ValidateCouponRequest(BaseModel):
+    """Payload for validating a coupon against a cart.
+
+    The coupon code is taken from the path parameter; this body
+    contains only the cart items to evaluate against the rules.
+    """
+
+    cart_items: list[CartItem]
+
+
+class DiscountedItem(BaseModel):
+    product_id: int
+    original_unit_price: float
+    discounted_unit_price: float
+    quantity: int
+
+
+class ValidateCouponResponse(BaseModel):
+    valid: bool
+    message: str
+    code: str | None = None
+    coupon_id: int | None = None
+    total_before: float
+    total_after: float
+    discount_amount: float
+    discounted_items: list[DiscountedItem] = []
 
 
 async def _get_min_prices_for_products(session: AsyncSession, product_ids: list[int]) -> dict[int, float | None]:
@@ -35,6 +80,93 @@ async def _get_min_prices_for_products(session: AsyncSession, product_ids: list[
 
     rows = result.all()
     return {producto_id: min_price for producto_id, min_price in rows}
+
+
+async def _evaluate_coupon_business_rules(
+    coupon: Coupon,
+    user_id: int,
+    cart_items: list[CartItem],
+    session: AsyncSession,
+) -> tuple[bool, str]:
+    """Replicate Django's validate_coupon logic using database rules.
+
+    Returns (is_valid, message), short‑circuiting on the first failure.
+    """
+
+    now = datetime.utcnow()
+
+    # 1) Basic flags: active and not expired
+    if not coupon.is_valid:
+        return False, "El cupón no está activo."
+
+    if coupon.expiration_date and coupon.expiration_date <= now:
+        return False, "El cupón ha expirado."
+
+    # 2) Coupon bound to a specific user
+    if coupon.user_id is not None and coupon.user_id != user_id:
+        return False, "Este cupón no es válido para tu cuenta."
+
+    # 3) Coupon bound to a specific product present in the cart
+    if coupon.product_id is not None:
+        product_ids_in_cart = {item.product_id for item in cart_items}
+        if coupon.product_id not in product_ids_in_cart:
+            return False, "El cupón no aplica a los productos del carrito."
+
+    # 4) Evaluate rule rows attached to the coupon
+    result_rules = await session.execute(
+        select(CouponRule).where(CouponRule.coupon_id == coupon.id_coupon)
+    )
+    rules = result_rules.scalars().all()
+
+    for rule in rules:
+        value = rule.value or {}
+        # Prefer a custom message from JSON value, fall back to generic
+        message = (
+            value.get("message")
+            or value.get("error_message")
+            or "El cupón no cumple las condiciones."
+        )
+        if rule.rule_type == "first_purchase_only":
+            # Check if user has previous sales in products_saledetail
+            res_count = await session.execute(
+                select(func.count(SaleDetail.id_sale_detail)).where(
+                    SaleDetail.usuario_id == user_id
+                )
+            )
+            sale_count = res_count.scalar() or 0
+            if sale_count > 0:
+                return False, message
+
+        elif rule.rule_type == "usage_limit_total":
+            limit = value.get("limit")
+            if limit is not None:
+                res_count = await session.execute(
+                    select(func.count(CouponRedemption.id)).where(
+                        CouponRedemption.coupon_id == coupon.id_coupon
+                    )
+                )
+                red_count = res_count.scalar() or 0
+                if red_count >= int(limit):
+                    return False, message
+
+        elif rule.rule_type == "usage_limit_per_user":
+            limit = value.get("limit")
+            if limit is not None:
+                res_count = await session.execute(
+                    select(func.count(CouponRedemption.id)).where(
+                        CouponRedemption.coupon_id == coupon.id_coupon,
+                        CouponRedemption.user_id == user_id,
+                    )
+                )
+                red_count = res_count.scalar() or 0
+                if red_count >= int(limit):
+                    return False, message
+
+        # Additional rule types defined in Django can be added here,
+        # using the operator/value JSON to drive comparisons against
+        # cart_items (e.g. minimum total, minimum items, etc.).
+
+    return True, "Cupón válido."
 
 
 @router.get("/")
@@ -158,6 +290,73 @@ async def get_favorites(limit: int = 20, offset: int = 0, session: AsyncSession 
             "puntos_venta": p.puntos_venta,
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
+            "price": min_prices.get(p.id_product),
+        }
+        for p in products
+    ]
+
+    return {"data": data}
+
+
+@router.get("/week-offers")
+async def get_week_offers(
+    offset: int = 0,
+    limit: int = 20,
+    session: AsyncSession = Depends(get_session),
+):
+    """Return products that have active coupon offers created in the last week.
+
+    A product is considered a "week offer" when there exists at least one
+    Coupon for that product such that:
+
+    - percentage_off > 0
+    - is_valid is True
+    - expiration_date > now
+    - created_at >= now - 7 days
+
+    Results are ordered by the coupon creation date (newest first) and
+    paginated with offset/limit. Each product includes the computed
+    ``price`` field (minimum non-zero GameDetail.precio).
+    """
+
+    now = datetime.utcnow()
+    week_ago = now - timedelta(days=7)
+
+    query = (
+        select(Product)
+        .join(Coupon, Coupon.product_id == Product.id_product)
+        .where(
+            Coupon.percentage_off > 0,
+            Coupon.is_valid.is_(True),
+            Coupon.expiration_date > now,
+            Coupon.created_at >= week_ago,
+        )
+        .order_by(Coupon.created_at.desc())
+    )
+
+    if offset:
+        query = query.offset(offset)
+    query = query.limit(limit)
+
+    result = await session.execute(query)
+    products = result.scalars().unique().all()
+    product_ids = [p.id_product for p in products]
+    min_prices = await _get_min_prices_for_products(session, product_ids)
+
+    data = [
+        {
+            "id_product": p.id_product,
+            "title": p.title,
+            "description": p.description,
+            "date_register": p.date_register.isoformat() if getattr(p, "date_register", None) else None,
+            "date_last_modified": p.date_last_modified.isoformat() if getattr(p, "date_last_modified", None) else None,
+            "image": p.image,
+            "calification": p.calification,
+            "puntos_venta": p.puntos_venta,
+            "puede_rentarse": p.puede_rentarse,
+            "destacado": p.destacado,
+            "type_id_id": p.type_id_id,
+            "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
         }
         for p in products
@@ -379,6 +578,70 @@ async def filter_products(
     return {"data": data}
 
 
+@router.get("/by-date")
+async def get_products_from_date(
+    from_date: date,
+    offset: int = 0,
+    limit: int = 20,
+    session: AsyncSession = Depends(get_session),
+):
+    """Filter products by registration date from a given day until today.
+
+    - Query params:
+        * from_date: starting date (YYYY-MM-DD)
+        * offset: number of items to skip (default 0)
+        * limit: max number of items to return (default 20)
+
+    Returns products whose ``date_register`` is between ``from_date``
+    and today's date (inclusive).
+    """
+
+    today = datetime.utcnow().date()
+    query = (
+        select(Product)
+        .options(selectinload(Product.consoles))
+        .where(
+            Product.date_register >= from_date,
+            Product.date_register <= today,
+        )
+        .order_by(Product.date_register.desc(), Product.id_product)
+    )
+
+    if offset:
+        query = query.offset(offset)
+    query = query.limit(limit)
+
+    result = await session.execute(query)
+    products = result.scalars().all()
+    product_ids = [p.id_product for p in products]
+    min_prices = await _get_min_prices_for_products(session, product_ids)
+
+    data = [
+        {
+            "id_product": p.id_product,
+            "title": p.title,
+            "description": p.description,
+            "date_register": p.date_register.isoformat() if getattr(p, "date_register", None) else None,
+            "date_last_modified": p.date_last_modified.isoformat() if getattr(p, "date_last_modified", None) else None,
+            "image": p.image,
+            "calification": p.calification,
+            "puntos_venta": p.puntos_venta,
+            "puede_rentarse": p.puede_rentarse,
+            "destacado": p.destacado,
+            "type_id_id": p.type_id_id,
+            "tipo_juego_id": p.tipo_juego_id,
+            "price": min_prices.get(p.id_product),
+            "consoles": [
+                {"id_console": c.id_console}
+                for c in getattr(p, "consoles", []) or []
+            ],
+        }
+        for p in products
+    ]
+
+    return {"data": data}
+
+
 @router.get("/combination-price/{id_product}")
 async def get_combination_price_by_game(id_product: int, session: AsyncSession = Depends(get_session)):
     """Get optimized price combinations for a product.
@@ -518,10 +781,68 @@ async def search_products(q: str, limit: int = 20, use_trgm: bool = False, sessi
     return {"data": data}
 
 
+@router.get("/most-sold")
+async def get_most_sold_products(
+    limit: int = 20,
+    offset: int = 0,
+    session: AsyncSession = Depends(get_session),
+):
+    """Return products ordered by number of sales (most sold first).
+
+    Counts how many orders exist in ``OrderBuy`` for each product and
+    returns products sorted by that count in descending order. Supports
+    offset/limit pagination and includes the computed ``price`` field.
+    """
+
+    query = (
+        select(Product, func.count(SaleDetail.id_sale_detail).label("sales_count"))
+        .join(SaleDetail, SaleDetail.producto_id == Product.id_product)
+        .group_by(Product.id_product)
+        .order_by(func.count(SaleDetail.id_sale_detail).desc())
+    )
+
+    if offset:
+        query = query.offset(offset)
+    query = query.limit(limit)
+
+    result = await session.execute(query)
+    rows = result.all()
+    products = [row[0] for row in rows]
+    sales_counts = {row[0].id_product: row[1] for row in rows}
+    product_ids = [p.id_product for p in products]
+    min_prices = await _get_min_prices_for_products(session, product_ids)
+
+    data = [
+        {
+            "id_product": p.id_product,
+            "title": p.title,
+            "description": p.description,
+            "date_register": p.date_register.isoformat() if getattr(p, "date_register", None) else None,
+            "date_last_modified": p.date_last_modified.isoformat() if getattr(p, "date_last_modified", None) else None,
+            "image": p.image,
+            "calification": p.calification,
+            "puntos_venta": p.puntos_venta,
+            "puede_rentarse": p.puede_rentarse,
+            "destacado": p.destacado,
+            "type_id_id": p.type_id_id,
+            "tipo_juego_id": p.tipo_juego_id,
+            "price": min_prices.get(p.id_product),
+            "sales_count": int(sales_counts.get(p.id_product, 0)),
+        }
+        for p in products
+    ]
+
+    return {"data": data}
+
+
 @router.get("/{id_product}")
 async def get_product_by_id(id_product: int, session: AsyncSession = Depends(get_session)):
 
-    result = await session.execute(select(Product).filter(Product.id_product == id_product))
+    result = await session.execute(
+        select(Product)
+        .options(selectinload(Product.consoles))
+        .filter(Product.id_product == id_product)
+    )
     product = result.scalars().first()
 
     if not product:
@@ -540,53 +861,6 @@ async def get_product_by_id(id_product: int, session: AsyncSession = Depends(get
     )
     stock_sum = res_stock.scalar() or 0
 
-    # Obtener detalles agrupados por (consola, licencia, duracion), ordenados por precio ascendente
-    details_query = (
-        select(
-            GameDetail.id_game_detail,
-            GameDetail.producto_id,
-            GameDetail.consola_id,
-            GameDetail.licencia_id,
-            GameDetail.cuenta_id,
-            GameDetail.duracion_dias_alquiler,
-            GameDetail.stock,
-            GameDetail.precio,
-            GameDetail.precio_descuento,
-            Consoles.descripcion.label("desc_console"),
-            Licenses.descripcion.label("desc_licence"),
-        )
-        .select_from(GameDetail)
-        .join(Consoles, GameDetail.consola_id == Consoles.id_console, isouter=True)
-        .join(Licenses, GameDetail.licencia_id == Licenses.id_license, isouter=True)
-        .distinct(GameDetail.consola_id, GameDetail.licencia_id, GameDetail.duracion_dias_alquiler)
-        .where(GameDetail.producto_id == id_product)
-        .order_by(
-            GameDetail.consola_id,
-            GameDetail.licencia_id,
-            GameDetail.duracion_dias_alquiler,
-            GameDetail.precio.asc(),
-        )
-    )
-
-    res_details = await session.execute(details_query)
-    rows = res_details.all()
-
-    details = [
-        {
-            "pk": row.id_game_detail,
-            "consola": row.consola_id,
-            "desc_console": row.desc_console or "",
-            "licencia": row.licencia_id,
-            "desc_licence": row.desc_licence or "",
-            "stock": row.stock,
-            "precio": row.precio,
-            "originalPrice": row.precio_descuento,
-            "duracion_dias_alquiler": row.duracion_dias_alquiler,
-        }
-        for row in rows
-    ]
-    details.sort(key=lambda x: ((x.get("precio") or 0) == 0, x.get("precio") or 0))
-
     data = {
         "id_product": product.id_product,
         "title": getattr(product, "title", None),
@@ -601,7 +875,10 @@ async def get_product_by_id(id_product: int, session: AsyncSession = Depends(get
         "stock": stock_sum,
         "precio_descuento": getattr(prices_game, "precio_descuento", None) if prices_game else None,
         "price": getattr(prices_game, "precio", None) if prices_game else None,
-        "details": details,
+        "consoles": [
+            {"id_console": c.id_console}
+            for c in getattr(product, "consoles", []) or []
+        ],
     }
 
     payload = {'message': 'proceso exitoso', 'data': data, 'code': '00', 'status': 200}
@@ -657,61 +934,102 @@ async def get_related_products(id_product: int, limit: int = 10, session: AsyncS
     return {"data": data}
 
 
-@router.get("/coupon/{code}")
+@router.post("/coupon/{code}", response_model=ValidateCouponResponse)
 async def validate_coupon_for_product(
     code: str,
-    product_id: int,
-    user_id: int | None = None,
+    payload: ValidateCouponRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ):
-    """Validate a coupon code for a specific product (optionally for a user).
+    """Validate a coupon code for the current user's cart.
 
     - Path: /products/coupon/{code}
-    - Query params: product_id (required), user_id (optional)
-    - Does **not** use JWT; caller must pass user_id explicitly
-    - Coupon is considered valid when:
-        * name_coupon matches code (case-sensitive)
-        * product_id matches
-        * (user_id is NULL or equals given user_id)
-        * is_valid is True
-        * expiration_date is in the future
+    - Body: cart_items with product, quantity and unit_price
+    - Auth: JWT via get_current_user
+
+    Implements the full Django-side validate_coupon logic:
+    * Basic flags (active, not expired)
+    * User binding (coupon.user_id)
+    * Product binding (coupon.product_id present in cart)
+    * Rule evaluation via products_couponrule and products_couponredemption
+    If valid, returns totals and per-product prices with coupon applied.
     """
+
+    if not payload.cart_items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El carrito está vacío.",
+        )
 
     now = datetime.utcnow()
 
-    # user_id is optional; allow coupons that are generic (NULL) or match given user
-    user_condition = or_(Coupon.user_id.is_(None), Coupon.user_id == user_id)
-
-    query = (
-        select(Coupon)
-        .where(
+    # Fetch coupon by code; detailed business rules are evaluated separately.
+    result = await session.execute(
+        select(Coupon).where(
             Coupon.name_coupon == code,
-            Coupon.product_id == product_id,
-            Coupon.is_valid.is_(True),
             Coupon.expiration_date > now,
-            user_condition,
-        )
-        .limit(1)
+        ).limit(1)
     )
-
-    result = await session.execute(query)
     coupon = result.scalars().first()
 
     if not coupon:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Coupon not valid for this product or user",
+            detail="Cupón no encontrado o no activo.",
         )
 
-    return {
-        "id_coupon": coupon.id_coupon,
-        "name_coupon": coupon.name_coupon,
-        "product_id": coupon.product_id,
-        "user_id": coupon.user_id,
-        "percentage_off": coupon.percentage_off,
-        "points_given": coupon.points_given,
-        "created_at": coupon.created_at.isoformat() if coupon.created_at else None,
-        "modified_at": coupon.modified_at.isoformat() if coupon.modified_at else None,
-        "expiration_date": coupon.expiration_date.isoformat() if coupon.expiration_date else None,
-        "is_valid": coupon.is_valid,
-    }
+    is_valid, message = await _evaluate_coupon_business_rules(
+        coupon=coupon,
+        user_id=current_user.id,
+        cart_items=payload.cart_items,
+        session=session,
+    )
+
+    # Compute cart totals and, if applicable, discounted prices.
+    total_before = sum(
+        item.quantity * item.unit_price for item in payload.cart_items
+    )
+    total_after = total_before
+    discounted_items: list[DiscountedItem] = []
+
+    if is_valid and coupon.percentage_off and coupon.percentage_off > 0:
+        discount_factor = (100 - coupon.percentage_off) / 100.0
+        discounted_total = 0.0
+
+        for item in payload.cart_items:
+            applies = False
+            if coupon.product_id is None:
+                applies = True
+            elif item.product_id == coupon.product_id:
+                applies = True
+
+            if applies:
+                discounted_unit_price = item.unit_price * discount_factor
+                discounted_line_total = discounted_unit_price * item.quantity
+                discounted_total += discounted_line_total
+
+                discounted_items.append(
+                    DiscountedItem(
+                        product_id=item.product_id,
+                        original_unit_price=item.unit_price,
+                        discounted_unit_price=discounted_unit_price,
+                        quantity=item.quantity,
+                    )
+                )
+            else:
+                discounted_total += item.unit_price * item.quantity
+
+            total_after = discounted_total
+
+    discount_amount = max(total_before - total_after, 0.0)
+
+    return ValidateCouponResponse(
+        valid=is_valid,
+        message=message,
+        code=coupon.name_coupon,
+        coupon_id=coupon.id_coupon,
+        total_before=total_before,
+        total_after=total_after if is_valid else total_before,
+        discount_amount=discount_amount if is_valid else 0.0,
+        discounted_items=discounted_items if is_valid else [],
+    )

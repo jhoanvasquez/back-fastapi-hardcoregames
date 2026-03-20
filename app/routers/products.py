@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 import asyncio
-from sqlalchemy import select, func, or_, cast, Integer
+from sqlalchemy import select, func, or_, cast, Integer, case
 from sqlalchemy.orm import selectinload
 from ..database import get_session
 from ..models import (
@@ -61,19 +61,27 @@ class ValidateCouponResponse(BaseModel):
 
 
 async def _get_min_prices_for_products(session: AsyncSession, product_ids: list[int]) -> dict[int, float | None]:
-    """Return a mapping product_id -> minimum GameDetail.precio (>0).
+    """Return a mapping product_id -> minimum effective price (>0).
 
-    If a product has no GameDetail with precio > 0, it will not
-    appear in the mapping and the caller can treat its price as None.
+    The "effective" price prefers ``precio_descuento`` when it is
+    greater than zero; otherwise it falls back to ``precio``. Only
+    rows with stock > 0 and effective price > 0 are considered.
     """
     if not product_ids:
         return {}
 
+    # Effective price: use discount price if available, otherwise base price.
+    effective_price = case(
+        (GameDetail.precio_descuento > 0, GameDetail.precio_descuento),
+        else_=GameDetail.precio,
+    )
+
     result = await session.execute(
-        select(GameDetail.producto_id, func.min(GameDetail.precio))
+        select(GameDetail.producto_id, func.min(effective_price))
         .where(
             GameDetail.producto_id.in_(product_ids),
-            GameDetail.precio > 0,
+            GameDetail.stock > 0,
+            effective_price > 0,
         )
         .group_by(GameDetail.producto_id)
     )
@@ -764,7 +772,9 @@ async def search_products(q: str, limit: int = 20, use_trgm: bool = False, sessi
 
     result = await session.execute(base)
     products = result.scalars().all()
-
+    product_ids = [p.id_product for p in products]
+    min_prices = await _get_min_prices_for_products(session, product_ids)
+    
     data = [
         {
             "id_product": p.id_product,
@@ -775,6 +785,7 @@ async def search_products(q: str, limit: int = 20, use_trgm: bool = False, sessi
             "calification": p.calification,
             "puntos_venta": p.puntos_venta,
             "type_id": p.type_id_id,
+            "price": min_prices.get(p.id_product),
         }
         for p in products
     ]

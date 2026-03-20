@@ -1,4 +1,4 @@
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -101,24 +101,37 @@ async def _evaluate_coupon_business_rules(
     Returns (is_valid, message), short‑circuiting on the first failure.
     """
 
-    now = datetime.utcnow()
+    # Use a timezone-aware "now" in UTC to avoid comparing
+    # offset-naive with offset-aware datetimes.
+    now = datetime.now(timezone.utc)
+
+    # Total of the cart, used by several rule types.
+    cart_total = sum(item.quantity * item.unit_price for item in cart_items)
+    total_quantity = sum(item.quantity for item in cart_items)
 
     # 1) Basic flags: active and not expired
     if not coupon.is_valid:
         return False, "El cupón no está activo."
 
-    if coupon.expiration_date and coupon.expiration_date <= now:
-        return False, "El cupón ha expirado."
+    if coupon.expiration_date:
+        # Normalize stored expiration_date to UTC and compare with aware "now".
+        if coupon.expiration_date.tzinfo is None:
+            exp_date = coupon.expiration_date.replace(tzinfo=timezone.utc)
+        else:
+            exp_date = coupon.expiration_date.astimezone(timezone.utc)
+
+        if exp_date <= now:
+            return False, "El cupón ha expirado."
 
     # 2) Coupon bound to a specific user
     if coupon.user_id is not None and coupon.user_id != user_id:
         return False, "Este cupón no es válido para tu cuenta."
 
-    # 3) Coupon bound to a specific product present in the cart
-    if coupon.product_id is not None:
-        product_ids_in_cart = {item.product_id for item in cart_items}
-        if coupon.product_id not in product_ids_in_cart:
-            return False, "El cupón no aplica a los productos del carrito."
+    # # 3) Coupon bound to a specific product present in the cart
+    # if coupon.product_id is not None:
+    #     product_ids_in_cart = {item.product_id for item in cart_items}
+    #     if coupon.product_id not in product_ids_in_cart:
+    #         return False, "El cupón no aplica a los productos del carrito."
 
     # 4) Evaluate rule rows attached to the coupon
     result_rules = await session.execute(
@@ -127,14 +140,103 @@ async def _evaluate_coupon_business_rules(
     rules = result_rules.scalars().all()
 
     for rule in rules:
-        value = rule.value or {}
-        # Prefer a custom message from JSON value, fall back to generic
-        message = (
-            value.get("message")
-            or value.get("error_message")
-            or "El cupón no cumple las condiciones."
-        )
-        if rule.rule_type == "first_purchase_only":
+        rt = (rule.rule_type or "").lower()
+        op = (rule.operator or "").lower()
+        value = rule.value if rule.value is not None else {}
+
+        # Extract a friendly error message if value is a dict; otherwise
+        # fall back to a generic message.
+        if isinstance(value, dict):
+            message = (
+                value.get("message")
+                or value.get("error_message")
+                or "El cupón no cumple las condiciones."
+            )
+        else:
+            message = "El cupón no cumple las condiciones."
+
+        # --- min_order_amount -----------------------------------------
+        if rt == "min_order_amount":
+            if isinstance(value, dict):
+                amount = value.get("amount")
+                if amount is None and op == "between":
+                    # BETWEEN uses min/max instead of amount    
+                    amount = 0
+            else:
+                amount = value
+
+            if op == "gte":
+                if cart_total < (amount or 0):
+                    return False, message
+                continue
+
+            if op == "between" and isinstance(value, dict):
+                min_val = value.get("min", 0)
+                max_val = value.get("max", float("inf"))
+                if not (min_val <= cart_total <= max_val):
+                    return False, message
+                continue
+
+        # --- max_order_amount -----------------------------------------
+        elif rt == "max_order_amount":
+            if isinstance(value, dict):
+                amount = value.get("amount")
+                if amount is None and op == "between":
+                    amount = float("inf")
+            else:
+                amount = value
+
+            if op == "lte":
+                # cart total must be <= amount
+                if cart_total > (amount if amount is not None else float("inf")):
+                    return False, message
+                continue
+
+            if op == "between" and isinstance(value, dict):
+                min_val = value.get("min", 0)
+                max_val = value.get("max", float("inf"))
+                if not (min_val <= cart_total <= max_val):
+                    return False, message
+                continue
+
+        # --- min_item_quantity ----------------------------------------
+        elif rt == "min_item_quantity":
+            if isinstance(value, dict):
+                min_qty = value.get("quantity", 0)
+                max_qty = value.get("max", float("inf"))
+            else:
+                min_qty = int(value or 0)
+                max_qty = float("inf")
+
+            if op == "gte":
+                if total_quantity < min_qty:
+                    return False, message
+                continue
+
+            if op == "eq":
+                if total_quantity != min_qty:
+                    return False, message
+                continue
+
+            if op == "between":
+                if not (min_qty <= total_quantity <= max_qty):
+                    return False, message
+                continue
+
+        # --- day_of_week ----------------------------------------------
+        elif rt == "day_of_week":
+            allowed_days = []
+            if isinstance(value, dict):
+                allowed_days = value.get("days") or []
+
+            current_day = now.weekday()  # 0=Monday … 6=Sunday
+            if op == "in":
+                if current_day not in allowed_days:
+                    return False, message
+                continue
+
+        # --- first_purchase_only --------------------------------------
+        elif rt == "first_purchase_only":
             # Check if user has previous sales in products_saledetail
             res_count = await session.execute(
                 select(func.count(SaleDetail.id_sale_detail)).where(
@@ -145,8 +247,12 @@ async def _evaluate_coupon_business_rules(
             if sale_count > 0:
                 return False, message
 
-        elif rule.rule_type == "usage_limit_total":
-            limit = value.get("limit")
+        elif rt == "usage_limit_total":
+            # value may be either a dict with "limit" or a bare int
+            if isinstance(value, dict):
+                limit = value.get("limit")
+            else:
+                limit = value
             if limit is not None:
                 res_count = await session.execute(
                     select(func.count(CouponRedemption.id)).where(
@@ -157,8 +263,12 @@ async def _evaluate_coupon_business_rules(
                 if red_count >= int(limit):
                     return False, message
 
-        elif rule.rule_type == "usage_limit_per_user":
-            limit = value.get("limit")
+        elif rt == "usage_limit_per_user":
+            # value may be either a dict with "limit" or a bare int
+            if isinstance(value, dict):
+                limit = value.get("limit")
+            else:
+                limit = value
             if limit is not None:
                 res_count = await session.execute(
                     select(func.count(CouponRedemption.id)).where(
@@ -786,6 +896,7 @@ async def search_products(q: str, limit: int = 20, use_trgm: bool = False, sessi
             "puntos_venta": p.puntos_venta,
             "type_id": p.type_id_id,
             "price": min_prices.get(p.id_product),
+            "originalPrice": p.price if getattr(p, "price", None) else None,
         }
         for p in products
     ]

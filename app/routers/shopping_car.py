@@ -98,6 +98,19 @@ async def create_shopping_car_item(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    # Reject duplicate: same GameDetail already in this user's cart.
+    existing = await session.execute(
+        select(ShoppingCar).where(
+            ShoppingCar.user_id == current_user.id,
+            ShoppingCar.product_id == payload.product_id,
+        )
+    )
+    if existing.scalars().first() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El producto ya está en el carrito.",
+        )
+
     item = ShoppingCar(
         user_id=current_user.id,
         product_id=payload.product_id,

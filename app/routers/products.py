@@ -127,11 +127,11 @@ async def _evaluate_coupon_business_rules(
     if coupon.user_id is not None and coupon.user_id != user_id:
         return False, "Este cupón no es válido para tu cuenta."
 
-    # # 3) Coupon bound to a specific product present in the cart
-    # if coupon.product_id is not None:
-    #     product_ids_in_cart = {item.product_id for item in cart_items}
-    #     if coupon.product_id not in product_ids_in_cart:
-    #         return False, "El cupón no aplica a los productos del carrito."
+    # 3) Coupon bound to a specific product — that product must be in the cart.
+    if coupon.product_id is not None:
+        product_ids_in_cart = {item.product_id for item in cart_items}
+        if coupon.product_id not in product_ids_in_cart:
+            return False, "El cupón no aplica a los productos del carrito."
 
     # 4) Evaluate rule rows attached to the coupon
     result_rules = await session.execute(
@@ -1141,7 +1141,7 @@ async def validate_coupon_for_product(
             else:
                 discounted_total += item.unit_price * item.quantity
 
-            total_after = discounted_total
+        total_after = discounted_total  # moved outside the loop
 
     discount_amount = max(total_before - total_after, 0.0)
 

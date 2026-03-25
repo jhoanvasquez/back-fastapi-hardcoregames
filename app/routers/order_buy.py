@@ -6,8 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
 from app.database import get_session
-from app.models import GameDetail, Product, User, OrderBuy
+from app.models import Product, User, OrderBuy
 from app.repositories.order_buy import OrderBuyRepository
+from app.services.order_buy import on_order_created, on_status_transition
 from app.util.util_auth import get_current_user
 from app.util.supabase_storage import upload_invoice_file, SupabaseNotConfiguredError
 
@@ -180,13 +181,25 @@ async def create_order(
             # Fallback: keep just the original filename if Supabase is not configured
             file_path = file.filename
 
-    order = await OrderBuyRepository.create(
+    # Create the order inside the current session transaction (no commit yet).
+    order = await OrderBuyRepository.create_no_commit(
         session=session,
         user_id=current_user.id,
         product_id=product_id,
         status=status_value or "pending",
         file_path=file_path,
+        id_license=id_license,
+        id_console=id_console,
     )
+
+    # Validate and decrement stock — raises HTTPException on failure, which
+    # causes the session to close without committing (implicit rollback).
+    await on_order_created(session, order)
+
+    # Commit order INSERT + stock decrement atomically.
+    await session.commit()
+    await session.refresh(order)
+
     return {
         "id_order": order.id_order,
         "user_id": order.user_id,
@@ -225,6 +238,11 @@ async def update_order(
             file_path = await upload_invoice_file(file, object_name)
         except SupabaseNotConfiguredError:
             file_path = file.filename
+
+    # Run lifecycle side-effects BEFORE mutating order.status so the service
+    # can read the previous status to detect genuine transitions.
+    if status_value is not None:
+        await on_status_transition(session, order, status_value)
 
     updated = await OrderBuyRepository.update(
         session=session,
@@ -271,6 +289,11 @@ async def patch_order(
 
     if order.user_id != current_user.id and not getattr(current_user, "is_superuser", False):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to modify this order")
+
+    # Run lifecycle side-effects BEFORE mutating order.status so the service
+    # can read the previous status to detect genuine transitions.
+    if patch.status is not None:
+        await on_status_transition(session, order, patch.status)
 
     updated = await OrderBuyRepository.update(
         session=session,

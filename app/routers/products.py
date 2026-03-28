@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 import asyncio
-from sqlalchemy import select, func, or_, cast, Integer, case
+from sqlalchemy import select, func, or_, cast, Integer
 from sqlalchemy.orm import selectinload
 from ..database import get_session
 from ..models import (
@@ -61,33 +61,50 @@ class ValidateCouponResponse(BaseModel):
 
 
 async def _get_min_prices_for_products(session: AsyncSession, product_ids: list[int]) -> dict[int, float | None]:
-    """Return a mapping product_id -> minimum effective price (>0).
+    """Return a mapping product_id -> minimum base price (precio > 0).
 
-    The "effective" price prefers ``precio_descuento`` when it is
-    greater than zero; otherwise it falls back to ``precio``. Only
-    rows with stock > 0 and effective price > 0 are considered.
+    Only rows with stock > 0 and precio > 0 are considered.
+    Use _get_min_discount_prices_for_products for the discounted price.
     """
     if not product_ids:
         return {}
 
-    # Effective price: use discount price if available, otherwise base price.
-    effective_price = case(
-        (GameDetail.precio_descuento > 0, GameDetail.precio_descuento),
-        else_=GameDetail.precio,
-    )
-
     result = await session.execute(
-        select(GameDetail.producto_id, func.min(effective_price))
+        select(GameDetail.producto_id, func.min(GameDetail.precio))
         .where(
             GameDetail.producto_id.in_(product_ids),
             GameDetail.stock > 0,
-            effective_price > 0,
+            GameDetail.precio > 0,
         )
         .group_by(GameDetail.producto_id)
     )
 
     rows = result.all()
     return {producto_id: min_price for producto_id, min_price in rows}
+
+
+async def _get_min_discount_prices_for_products(
+    session: AsyncSession, product_ids: list[int]
+) -> dict[int, float | None]:
+    """Return a mapping product_id -> minimum precio_descuento (>0).
+
+    Only rows with stock > 0 and precio_descuento > 0 are considered.
+    Returns None for products with no active discount variant.
+    """
+    if not product_ids:
+        return {}
+
+    result = await session.execute(
+        select(GameDetail.producto_id, func.min(GameDetail.precio_descuento))
+        .where(
+            GameDetail.producto_id.in_(product_ids),
+            GameDetail.stock > 0,
+            GameDetail.precio_descuento > 0,
+        )
+        .group_by(GameDetail.producto_id)
+    )
+    rows = result.all()
+    return {producto_id: min_discount for producto_id, min_discount in rows}
 
 
 async def _evaluate_coupon_business_rules(
@@ -302,6 +319,7 @@ async def list_products(
     products = result.scalars().all()
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
+    min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
 
     data = [
         {
@@ -317,6 +335,7 @@ async def list_products(
             "destacado": p.destacado,
             "type_id": p.type_id_id,
             "price": min_prices.get(p.id_product),
+            "price_discount": min_discount_prices.get(p.id_product),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -355,6 +374,7 @@ async def get_products(offset: int = 0, limit: int = 10, session: AsyncSession =
     products = result.scalars().all()
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
+    min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
 
     data = [
         {
@@ -371,6 +391,7 @@ async def get_products(offset: int = 0, limit: int = 10, session: AsyncSession =
             "type_id_id": p.type_id_id,
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
+            "price_discount": min_discount_prices.get(p.id_product),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -394,6 +415,7 @@ async def get_favorites(limit: int = 20, offset: int = 0, session: AsyncSession 
     products = result.scalars().all()
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
+    min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
 
     # serializar a dicts simples para respuesta JSON
     data = [
@@ -409,6 +431,7 @@ async def get_favorites(limit: int = 20, offset: int = 0, session: AsyncSession 
             "puede_rentarse": p.puede_rentarse,
             "destacado": p.destacado,
             "price": min_prices.get(p.id_product),
+            "price_discount": min_discount_prices.get(p.id_product),
         }
         for p in products
     ]
@@ -460,6 +483,7 @@ async def get_week_offers(
     products = result.scalars().unique().all()
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
+    min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
 
     data = [
         {
@@ -476,6 +500,7 @@ async def get_week_offers(
             "type_id_id": p.type_id_id,
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
+            "price_discount": min_discount_prices.get(p.id_product),
         }
         for p in products
     ]
@@ -669,6 +694,7 @@ async def filter_products(
     products = result.scalars().all()
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
+    min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
 
     data = [
         {
@@ -685,6 +711,7 @@ async def filter_products(
             "type_id_id": p.type_id_id,
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
+            "price_discount": min_discount_prices.get(p.id_product),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -698,7 +725,7 @@ async def filter_products(
 
 @router.get("/by-date")
 async def get_products_from_date(
-    from_date: date = Query(..., alias="date"),
+    from_date: date = Query(...),
     offset: int = 0,
     limit: int = 20,
     session: AsyncSession = Depends(get_session),
@@ -733,6 +760,7 @@ async def get_products_from_date(
     products = result.scalars().all()
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
+    min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
 
     data = [
         {
@@ -749,6 +777,7 @@ async def get_products_from_date(
             "type_id_id": p.type_id_id,
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
+            "price_discount": min_discount_prices.get(p.id_product),
             "consoles": [
                 {"id_console": c.id_console}
                 for c in getattr(p, "consoles", []) or []
@@ -884,7 +913,8 @@ async def search_products(q: str, limit: int = 20, use_trgm: bool = False, sessi
     products = result.scalars().all()
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
-    
+    min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
+
     data = [
         {
             "id_product": p.id_product,
@@ -896,7 +926,7 @@ async def search_products(q: str, limit: int = 20, use_trgm: bool = False, sessi
             "puntos_venta": p.puntos_venta,
             "type_id": p.type_id_id,
             "price": min_prices.get(p.id_product),
-            "originalPrice": p.price if getattr(p, "price", None) else None,
+            "price_discount": min_discount_prices.get(p.id_product)
         }
         for p in products
     ]
@@ -933,6 +963,7 @@ async def get_most_sold_products(
     sales_counts = {row[0].id_product: row[1] for row in rows}
     product_ids = [p.id_product for p in products]
     min_prices = await _get_min_prices_for_products(session, product_ids)
+    min_discount_prices = await _get_min_discount_prices_for_products(session, product_ids)
 
     data = [
         {
@@ -949,6 +980,7 @@ async def get_most_sold_products(
             "type_id_id": p.type_id_id,
             "tipo_juego_id": p.tipo_juego_id,
             "price": min_prices.get(p.id_product),
+            "price_discount": min_discount_prices.get(p.id_product),
             "sales_count": int(sales_counts.get(p.id_product, 0)),
         }
         for p in products

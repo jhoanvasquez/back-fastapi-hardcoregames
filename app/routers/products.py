@@ -1,6 +1,6 @@
 from datetime import datetime, date, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
@@ -698,7 +698,7 @@ async def filter_products(
 
 @router.get("/by-date")
 async def get_products_from_date(
-    from_date: date,
+    from_date: date = Query(..., alias="date"),
     offset: int = 0,
     limit: int = 20,
     session: AsyncSession = Depends(get_session),

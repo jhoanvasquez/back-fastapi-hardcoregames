@@ -725,7 +725,8 @@ async def filter_products(
 
 @router.get("/by-date")
 async def get_products_from_date(
-    from_date: date = Query(...),
+    from_date: date | None = Query(default=None),
+    date_param: date | None = Query(default=None, alias="date"),
     offset: int = 0,
     limit: int = 20,
     session: AsyncSession = Depends(get_session),
@@ -733,20 +734,27 @@ async def get_products_from_date(
     """Filter products by registration date from a given day until today.
 
     - Query params:
-        * from_date: starting date (YYYY-MM-DD)
+        * from_date or date: starting date (YYYY-MM-DD) — either name is accepted
         * offset: number of items to skip (default 0)
         * limit: max number of items to return (default 20)
 
-    Returns products whose ``date_register`` is between ``from_date``
+    Returns products whose ``date_register`` is between the given date
     and today's date (inclusive).
     """
+
+    resolved_date = from_date or date_param
+    if resolved_date is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Query parameter 'from_date' (or 'date') is required.",
+        )
 
     today = datetime.utcnow().date()
     query = (
         select(Product)
         .options(selectinload(Product.consoles))
         .where(
-            Product.date_register >= from_date,
+            Product.date_register >= resolved_date,
             Product.date_register <= today,
         )
         .order_by(Product.date_register.desc(), Product.id_product)

@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.models import LikedGame, Product, User
+from app.models import LikedGame, Product, User, GameDetail
 from app.util.util_auth import get_current_user
 
 router = APIRouter(prefix="/liked-games", tags=["liked-games"])
@@ -27,6 +27,34 @@ async def get_liked_games_by_user(user_id: int, session: AsyncSession = Depends(
     result = await session.execute(query)
     liked_games = result.scalars().all()
 
+    product_ids = [lg.product.id_product for lg in liked_games if isinstance(lg.product, Product)]
+
+    # Fetch min prices
+    min_prices: dict[int, float | None] = {}
+    min_discount_prices: dict[int, float | None] = {}
+    if product_ids:
+        price_result = await session.execute(
+            select(GameDetail.producto_id, func.min(GameDetail.precio))
+            .where(
+                GameDetail.producto_id.in_(product_ids),
+                GameDetail.stock > 0,
+                GameDetail.precio > 0,
+            )
+            .group_by(GameDetail.producto_id)
+        )
+        min_prices = {pid: p for pid, p in price_result.all()}
+
+        discount_result = await session.execute(
+            select(GameDetail.producto_id, func.min(GameDetail.precio_descuento))
+            .where(
+                GameDetail.producto_id.in_(product_ids),
+                GameDetail.stock > 0,
+                GameDetail.precio_descuento > 0,
+            )
+            .group_by(GameDetail.producto_id)
+        )
+        min_discount_prices = {pid: p for pid, p in discount_result.all()}
+
     data = [
         {
             "liked_id": lg.id,
@@ -40,6 +68,8 @@ async def get_liked_games_by_user(user_id: int, session: AsyncSession = Depends(
                 "puntos_venta": lg.product.puntos_venta,
                 "puede_rentarse": lg.product.puede_rentarse,
                 "destacado": lg.product.destacado,
+                "price": min_prices.get(lg.product.id_product),
+                "price_discount": min_discount_prices.get(lg.product.id_product),
             } if isinstance(lg.product, Product) else None,
         }
         for lg in liked_games

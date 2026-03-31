@@ -14,6 +14,7 @@ from ..models import (
     Consoles,
     Licenses,
     Coupon,
+    CouponGameDetail,
     User,
     SaleDetail,
     CouponRule,
@@ -30,6 +31,8 @@ class CartItem(BaseModel):
     product_id: int
     quantity: int
     unit_price: float
+    category_id: int | None = None      # used by allowed_categories coupon rule
+    combination_id: int | None = None   # id_game_detail (combination pk) for coupon binding
 
 
 class ValidateCouponRequest(BaseModel):
@@ -144,10 +147,23 @@ async def _evaluate_coupon_business_rules(
     if coupon.user_id is not None and coupon.user_id != user_id:
         return False, "Este cupón no es válido para tu cuenta."
 
-    # 3) Coupon bound to a specific product — that product must be in the cart.
-    if coupon.product_id is not None:
-        product_ids_in_cart = {item.product_id for item in cart_items}
-        if coupon.product_id not in product_ids_in_cart:
+    # 3) Coupon bound to specific GameDetails (M2M) — at least one linked
+    #    item must be present in the cart. Empty = applies to all.
+    res_gd = await session.execute(
+        select(CouponGameDetail.gamedetail_id)
+        .where(CouponGameDetail.coupon_id == coupon.id_coupon)
+    )
+    coupon_game_detail_ids = {row[0] for row in res_gd.all()}
+    if coupon_game_detail_ids:
+        cart_product_ids = {item.product_id for item in cart_items}
+
+        res_products = await session.execute(
+            select(GameDetail.id_game_detail,)
+            .where(GameDetail.id_game_detail.in_(coupon_game_detail_ids))
+        )
+        allowed_product_ids = {row[0] for row in res_products.all()}
+
+        if allowed_product_ids.isdisjoint(cart_product_ids):
             return False, "El cupón no aplica a los productos del carrito."
 
     # 4) Evaluate rule rows attached to the coupon
@@ -161,131 +177,114 @@ async def _evaluate_coupon_business_rules(
         op = (rule.operator or "").lower()
         value = rule.value if rule.value is not None else {}
 
-        # Extract a friendly error message if value is a dict; otherwise
-        # fall back to a generic message.
-        if isinstance(value, dict):
-            message = (
-                value.get("message")
-                or value.get("error_message")
-                or "El cupón no cumple las condiciones."
-            )
-        else:
-            message = "El cupón no cumple las condiciones."
-
         # --- min_order_amount -----------------------------------------
         if rt == "min_order_amount":
-            if isinstance(value, dict):
-                amount = value.get("amount")
-                if amount is None and op == "between":
-                    # BETWEEN uses min/max instead of amount    
-                    amount = 0
-            else:
-                amount = value
+            v = value if isinstance(value, dict) else {}
+            amount = v.get("amount", value) if isinstance(value, dict) else value
 
             if op == "gte":
-                if cart_total < (amount or 0):
-                    return False, message
-                continue
+                if cart_total >= amount:
+                    continue
+                return False, f"El monto mínimo de la orden debe ser {amount}."
 
-            if op == "between" and isinstance(value, dict):
-                min_val = value.get("min", 0)
-                max_val = value.get("max", float("inf"))
-                if not (min_val <= cart_total <= max_val):
-                    return False, message
-                continue
+            if op == "between":
+                min_val = v.get("min", 0)
+                max_val = v.get("max", float("inf"))
+                if min_val <= cart_total <= max_val:
+                    continue
+                return False, f"El monto de la orden debe estar entre {min_val} y {max_val}."
 
         # --- max_order_amount -----------------------------------------
         elif rt == "max_order_amount":
-            if isinstance(value, dict):
-                amount = value.get("amount")
-                if amount is None and op == "between":
-                    amount = float("inf")
-            else:
-                amount = value
+            amount = value if isinstance(value, (int, float)) else value.get("amount", float("inf"))
 
             if op == "lte":
-                # cart total must be <= amount
-                if cart_total > (amount if amount is not None else float("inf")):
-                    return False, message
-                continue
+                if cart_total <= amount:
+                    continue
+                return False, f"El monto máximo de la orden es {amount}."
 
-            if op == "between" and isinstance(value, dict):
+            if op == "between":
                 min_val = value.get("min", 0)
                 max_val = value.get("max", float("inf"))
-                if not (min_val <= cart_total <= max_val):
-                    return False, message
-                continue
+                if min_val <= cart_total <= max_val:
+                    continue
+                return False, f"El monto de la orden debe estar entre {min_val} y {max_val}."
 
         # --- min_item_quantity ----------------------------------------
         elif rt == "min_item_quantity":
-            if isinstance(value, dict):
-                min_qty = value.get("quantity", 0)
-                max_qty = value.get("max", float("inf"))
-            else:
-                min_qty = int(value or 0)
-                max_qty = float("inf")
+            v = value if isinstance(value, dict) else {}
+            min_qty = v.get("quantity", value) if isinstance(value, dict) else value
 
             if op == "gte":
-                if total_quantity < min_qty:
-                    return False, message
-                continue
+                if total_quantity >= min_qty:
+                    continue
+                return False, f"Se requieren al menos {min_qty} ítems en el carrito."
 
             if op == "eq":
-                if total_quantity != min_qty:
-                    return False, message
-                continue
+                if total_quantity == min_qty:
+                    continue
+                return False, f"Se requieren exactamente {min_qty} ítems en el carrito."
 
             if op == "between":
-                if not (min_qty <= total_quantity <= max_qty):
-                    return False, message
-                continue
+                max_qty = v.get("max", float("inf"))
+                if min_qty <= total_quantity <= max_qty:
+                    continue
+                return False, f"La cantidad de ítems debe estar entre {min_qty} y {max_qty}."
+
+        # --- allowed_categories ---------------------------------------
+        elif rt == "allowed_categories":
+            v = value if isinstance(value, dict) else {}
+            allowed = v.get("categories", [])
+            cart_categories = {item.category_id for item in cart_items if item.category_id is not None}
+
+            if op == "in":
+                if cart_categories & set(allowed):
+                    continue
+                return False, "Ningún ítem del carrito pertenece a las categorías permitidas."
 
         # --- day_of_week ----------------------------------------------
         elif rt == "day_of_week":
-            allowed_days = []
-            if isinstance(value, dict):
-                allowed_days = value.get("days") or []
+            v = value if isinstance(value, dict) else {}
+            allowed_days = v.get("days", [])  # 0=Monday … 6=Sunday
+            current_day = now.weekday()
 
-            current_day = now.weekday()  # 0=Monday … 6=Sunday
             if op == "in":
-                if current_day not in allowed_days:
-                    return False, message
-                continue
+                if current_day in allowed_days:
+                    continue
+                day_names = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+                allowed_names = ", ".join(day_names[d] for d in allowed_days if 0 <= d <= 6)
+                return False, f"El cupón solo es válido los siguientes días: {allowed_names}."
 
         # --- first_purchase_only --------------------------------------
         elif rt == "first_purchase_only":
-            # Check if user has previous sales in products_saledetail
             res_count = await session.execute(
                 select(func.count(SaleDetail.id_sale_detail)).where(
                     SaleDetail.usuario_id == user_id
                 )
             )
             sale_count = res_count.scalar() or 0
-            if sale_count > 0:
-                return False, message
+            if sale_count == 0:
+                continue
+            return False, "Este cupón es válido solo para la primera compra."
 
+        # --- usage_limit_total ----------------------------------------
         elif rt == "usage_limit_total":
-            # value may be either a dict with "limit" or a bare int
-            if isinstance(value, dict):
-                limit = value.get("limit")
-            else:
-                limit = value
+            limit = value.get("limit", 0) if isinstance(value, dict) else value
             if limit is not None:
                 res_count = await session.execute(
                     select(func.count(CouponRedemption.id)).where(
                         CouponRedemption.coupon_id == coupon.id_coupon
                     )
                 )
-                red_count = res_count.scalar() or 0
-                if red_count >= int(limit):
-                    return False, message
+                total_used = res_count.scalar() or 0
+                if op in ("lte", "eq"):
+                    if total_used < int(limit):
+                        continue
+                return False, "El cupón ha alcanzado el límite máximo de usos."
 
+        # --- usage_limit_per_user -------------------------------------
         elif rt == "usage_limit_per_user":
-            # value may be either a dict with "limit" or a bare int
-            if isinstance(value, dict):
-                limit = value.get("limit")
-            else:
-                limit = value
+            limit = value.get("limit", 1) if isinstance(value, dict) else value
             if limit is not None:
                 res_count = await session.execute(
                     select(func.count(CouponRedemption.id)).where(
@@ -293,13 +292,13 @@ async def _evaluate_coupon_business_rules(
                         CouponRedemption.user_id == user_id,
                     )
                 )
-                red_count = res_count.scalar() or 0
-                if red_count >= int(limit):
-                    return False, message
+                user_used = res_count.scalar() or 0
+                if op in ("lte", "eq"):
+                    if user_used < int(limit):
+                        continue
+                return False, "Has alcanzado el límite de usos de este cupón."
 
-        # Additional rule types defined in Django can be added here,
-        # using the operator/value JSON to drive comparisons against
-        # cart_items (e.g. minimum total, minimum items, etc.).
+        # Unknown / unhandled rule type — pass silently (matches Django fallback)
 
     return True, "Cupón válido."
 
@@ -1123,13 +1122,20 @@ async def validate_coupon_for_product(
             detail="El carrito está vacío.",
         )
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
-    # Fetch coupon by code; detailed business rules are evaluated separately.
+    # Fetch coupon by code applying early filters:
+    # - not expired
+    # - user binding: coupon.user_id IS NULL (public) OR matches the requester
     result = await session.execute(
         select(Coupon).where(
             Coupon.name_coupon == code,
             Coupon.expiration_date > now,
+            Coupon.is_valid.is_(True),
+            or_(
+                Coupon.user_id.is_(None),
+                Coupon.user_id == current_user.id,
+            ),
         ).limit(1)
     )
     coupon = result.scalars().first()
@@ -1158,12 +1164,26 @@ async def validate_coupon_for_product(
         discount_factor = (100 - coupon.percentage_off) / 100.0
         discounted_total = 0.0
 
+        # Resolve which items are covered by this coupon's game_details M2M.
+        # Empty set means the discount applies to all cart items.
+        res_gd = await session.execute(
+            select(CouponGameDetail.gamedetail_id)
+            .where(CouponGameDetail.coupon_id == coupon.id_coupon)
+        )
+        coupon_game_detail_ids = {row[0] for row in res_gd.all()}
+
         for item in payload.cart_items:
-            applies = False
-            if coupon.product_id is None:
+            if not coupon_game_detail_ids:
+                # No restriction — discount applies to everything
                 applies = True
-            elif item.product_id == coupon.product_id:
-                applies = True
+            elif item.combination_id is not None:
+                # Tier 1: explicit combination_id matches a linked gamedetail_id
+                applies = item.combination_id in coupon_game_detail_ids
+            else:
+                # Tier 2: client sends gamedetail_id as product_id
+                applies = item.product_id in coupon_game_detail_ids
+            # NOTE: tier-3 (gamedetail→producto_id resolution) is intentionally
+            # NOT used here to avoid discounting unrelated items.
 
             if applies:
                 discounted_unit_price = item.unit_price * discount_factor

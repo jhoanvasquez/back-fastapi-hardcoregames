@@ -213,10 +213,23 @@ class Coupon(Base):
     user_id = Column(Integer, ForeignKey("auth_user.id"), nullable=True)
     percentage_off = Column(Integer, nullable=False, default=0)
     points_given = Column(Integer, nullable=False, default=0)
-    product_id = Column(Integer, ForeignKey("products_products.id_product"), nullable=True)
 
     user = relationship("User", backref="coupons")
-    product = relationship("Product", backref="coupons")
+    # game_details M2M is accessed via CouponGameDetail junction below
+
+
+class CouponGameDetail(Base):
+    """Junction table for Coupon.game_details ManyToManyField (Django-managed).
+
+    Django generates this as ``coupons_coupon_game_details``.
+    Columns: id, coupon_id, gamedetail_id.
+    """
+
+    __tablename__ = "coupons_coupon_game_details"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    coupon_id = Column(Integer, ForeignKey("coupons_coupon.id_coupon"), nullable=False)
+    gamedetail_id = Column(Integer, ForeignKey("products_gamedetail.id_game_detail"), nullable=False)
 
 
 class CouponRule(Base):

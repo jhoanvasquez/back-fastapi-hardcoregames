@@ -2,8 +2,8 @@ name: Health Check
 
 on:
   schedule:
-    # Every 3 minutes from 6:00 AM to 11:59 PM UTC (covers 6am–midnight)
-    - cron: "*/3 6-23 * * *"
+    # Every 5 minutes from 6:00 AM to 11:59 PM UTC (GitHub minimum is 5 min)
+    - cron: "*/5 6-23 * * *"
   workflow_dispatch: # Allow manual trigger
 
 jobs:

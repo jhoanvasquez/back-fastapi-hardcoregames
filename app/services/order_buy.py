@@ -23,8 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import GameDetail, OrderBuy, SaleDetail
 
 # Status string constants kept in one place.
-STATUS_COMPLETADO = "Completado"
-STATUS_CANCELADO = "Cancelado"
+STATUS_COMPLETADO = "completed"
+STATUS_CANCELADO = "cancelled"
 
 
 # ---------------------------------------------------------------------------

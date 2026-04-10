@@ -1,4 +1,5 @@
 from datetime import datetime, date, timedelta, timezone
+from sys import breakpointhook
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -120,7 +121,7 @@ async def _evaluate_coupon_business_rules(
 
     Returns (is_valid, message), short‑circuiting on the first failure.
     """
-
+    
     # Use a timezone-aware "now" in UTC to avoid comparing
     # offset-naive with offset-aware datetimes.
     now = datetime.now(timezone.utc)
@@ -155,15 +156,39 @@ async def _evaluate_coupon_business_rules(
     )
     coupon_game_detail_ids = {row[0] for row in res_gd.all()}
     if coupon_game_detail_ids:
-        cart_product_ids = {item.product_id for item in cart_items}
-
+        # Fetch allowed GameDetail attributes for the coupon
         res_products = await session.execute(
-            select(GameDetail.id_game_detail,)
-            .where(GameDetail.id_game_detail.in_(coupon_game_detail_ids))
+            select(
+                GameDetail.id_game_detail,
+                GameDetail.licencia_id,
+                GameDetail.consola_id,
+                GameDetail.duracion_dias_alquiler
+            ).where(GameDetail.id_game_detail.in_(coupon_game_detail_ids))
         )
-        allowed_product_ids = {row[0] for row in res_products.all()}
+        allowed_combinations = {
+            (row.licencia_id, row.consola_id, row.duracion_dias_alquiler)
+            for row in res_products.all()
+        }
 
-        if allowed_product_ids.isdisjoint(cart_product_ids):
+        # For each cart item, fetch its GameDetail and compare attributes
+        found_match = False
+        for item in cart_items:
+            # If combination_id is provided, use it; else, skip
+            if item.product_id is not None:
+                res_cart_gd = await session.execute(
+                    select(
+                        GameDetail.licencia_id,
+                        GameDetail.consola_id,
+                        GameDetail.duracion_dias_alquiler
+                    ).where(GameDetail.id_game_detail == item.product_id)
+                )
+                cart_gd = res_cart_gd.first()
+                if cart_gd:
+                    cart_tuple = (cart_gd.licencia_id, cart_gd.consola_id, cart_gd.duracion_dias_alquiler)
+                    if cart_tuple in allowed_combinations:
+                        found_match = True
+                        break
+        if not found_match:
             return False, "El cupón no aplica a los productos del carrito."
 
     # 4) Evaluate rule rows attached to the coupon
@@ -214,7 +239,7 @@ async def _evaluate_coupon_business_rules(
         elif rt == "min_item_quantity":
             v = value if isinstance(value, dict) else {}
             min_qty = v.get("quantity", value) if isinstance(value, dict) else value
-
+            
             if op == "gte":
                 if total_quantity >= min_qty:
                     continue
@@ -312,7 +337,10 @@ async def list_products(
 
     if search:
         pattern = f"%{search}%"
-        query = query.where(Product.title.ilike(pattern))
+        # Make search accent-insensitive and case-insensitive using unaccent
+        query = query.where(
+            func.unaccent(func.lower(Product.title)).ilike(func.unaccent(func.lower(pattern)))
+        )
 
     result = await session.execute(query)
     products = result.scalars().all()
@@ -1129,7 +1157,7 @@ async def validate_coupon_for_product(
     # - user binding: coupon.user_id IS NULL (public) OR matches the requester
     result = await session.execute(
         select(Coupon).where(
-            Coupon.name_coupon == code,
+            func.lower(Coupon.name_coupon) == code.lower(),
             Coupon.expiration_date > now,
             Coupon.is_valid.is_(True),
             or_(

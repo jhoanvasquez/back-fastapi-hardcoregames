@@ -6,8 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 import asyncio
-from sqlalchemy import select, func, or_, cast, Integer
+from sqlalchemy import select, func, or_, cast, Integer, literal
 from sqlalchemy.orm import selectinload
+
 from ..database import get_session
 from ..models import (
     Product,
@@ -25,6 +26,23 @@ from ..util.util_auth import get_current_user
 
 router = APIRouter(prefix="/products", tags=["products"])
 
+ALIAS_MAP = {
+    'fifa': ['fc'],
+    'cod': ['callofduty', 'callofdutyblackops', 'callofdutymw', 'callofdutywarzone'],
+    'pes': ['proevolutionsoccer', 'efootball'],
+    'hades2': ['hadesii', 'hadestwo', 'hades ii', 'hades two'],
+    'rdr2': ['reddeadredemption2', 'reddead', 'redemption', 'rdrii', 'reddeadredemptionii', 'reddeadredemption', 'reddead2'],
+    'reddead': ['reddeadredemption2', 'rdr2', 'redemption', 'rdrii', 'reddeadredemptionii', 'reddeadredemption', 'reddead2'],
+    'redemption': ['reddeadredemption2', 'rdr2', 'reddead', 'rdrii', 'reddeadredemptionii', 'reddeadredemption', 'reddead2'],
+    'rdrii': ['reddeadredemption2', 'rdr2', 'reddead', 'redemption', 'reddeadredemptionii', 'reddeadredemption', 'reddead2'],
+    'reddeadredemptionii': ['reddeadredemption2', 'rdr2', 'reddead', 'redemption', 'rdrii', 'reddeadredemption', 'reddead2'],
+    'reddeadredemption2': ['rdr2', 'reddead', 'redemption', 'rdrii', 'reddeadredemptionii', 'reddeadredemption', 'reddead2'],
+    'reddeadredemption': ['reddeadredemption2', 'rdr2', 'reddead', 'redemption', 'rdrii', 'reddeadredemptionii', 'reddead2'],
+    'reddead2': ['reddeadredemption2', 'rdr2', 'reddead', 'redemption', 'rdrii', 'reddeadredemptionii', 'reddeadredemption'],
+    'fc26': ['FC 26'],
+    'fifa26': ['FC 26'],
+    'fifa 26': ['FC 26'],
+}
 
 class CartItem(BaseModel):
     """Single item in the cart used for coupon validation."""
@@ -336,11 +354,21 @@ async def list_products(
     query = select(Product).options(selectinload(Product.consoles)).order_by(Product.id_product)
 
     if search:
-        pattern = f"%{search}%"
-        # Make search accent-insensitive and case-insensitive using unaccent
-        query = query.where(
-            func.unaccent(func.lower(Product.title)).ilike(func.unaccent(func.lower(pattern)))
-        )
+        def normalize(s):
+            from unidecode import unidecode
+            return unidecode(s).lower().replace(' ', '')
+        
+        search_norm = normalize(search)
+        title_expr = func.replace(func.unaccent(func.lower(Product.title)), ' ', '')
+
+        # If search matches an alias, search for all mapped aliases
+        if search_norm in ALIAS_MAP:
+            alias_patterns = [f"%{alias}%" for alias in ALIAS_MAP[search_norm]]
+            conditions = [title_expr.ilike(pat) for pat in alias_patterns]
+            query = query.where(or_(*conditions))
+        else:
+            pattern = f"%{search_norm}%"
+            query = query.where(title_expr.ilike(pattern))
 
     result = await session.execute(query)
     products = result.scalars().all()
@@ -936,10 +964,20 @@ async def search_products(q: str, limit: int = 20, use_trgm: bool = False, sessi
     if not q:
         return {"data": []}
 
-    pattern = f"%{q}%"
-    base = select(Product).where(
-        or_(Product.title.ilike(pattern), Product.title.ilike(pattern))
-    ).limit(limit)
+    def normalize(s):
+        from unidecode import unidecode
+        return unidecode(s).lower().replace(' ', '')
+
+    search_norm = normalize(q)
+    title_expr = func.replace(func.unaccent(func.lower(Product.title)), ' ', '')
+
+    if search_norm in ALIAS_MAP:
+        alias_patterns = [f"%{alias}%" for alias in ALIAS_MAP[search_norm]]
+        conditions = [title_expr.ilike(pat) for pat in alias_patterns]
+        base = select(Product).where(or_(*conditions)).limit(limit)
+    else:
+        pattern = f"%{search_norm}%"
+        base = select(Product).where(title_expr.ilike(pattern)).limit(limit)
 
     if use_trgm:
         base = base.order_by(func.similarity(Product.title, q).desc())

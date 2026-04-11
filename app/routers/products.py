@@ -39,9 +39,9 @@ ALIAS_MAP = {
     'reddeadredemption2': ['rdr2', 'reddead', 'redemption', 'rdrii', 'reddeadredemptionii', 'reddeadredemption', 'reddead2'],
     'reddeadredemption': ['reddeadredemption2', 'rdr2', 'reddead', 'redemption', 'rdrii', 'reddeadredemptionii', 'reddead2'],
     'reddead2': ['reddeadredemption2', 'rdr2', 'reddead', 'redemption', 'rdrii', 'reddeadredemptionii', 'reddeadredemption'],
-    'fc26': ['FC 26'],
-    'fifa26': ['FC 26'],
-    'fifa 26': ['FC 26'],
+    'fc26': ['fc 26'],
+    'fifa26': ['fc 26'],
+    'fifa 26': ['fc 26'],
 }
 
 class CartItem(BaseModel):

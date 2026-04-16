@@ -707,6 +707,7 @@ async def get_products_by_game_type(
 
 @router.get("/filter")
 async def filter_products(
+    q: str | None = None,
     type_id: int | None = None,
     console_id: int | None = None,
     game_type_id: int | None = None,
@@ -714,9 +715,10 @@ async def filter_products(
     limit: int = 20,
     session: AsyncSession = Depends(get_session),
 ):
-    """Filter products by optional type, console and game type.
+    """Filter products by optional text search, type, console and game type.
 
     - Query params (all optional):
+        * q: search by title (supports unaccented, case-insensitive, alias-aware matching)
         * type_id: filters by Product.type_id_id
         * console_id: filters by Consoles.id_console
         * game_type_id: filters by Product.tipo_juego_id
@@ -726,6 +728,16 @@ async def filter_products(
 
     query = select(Product).options(selectinload(Product.consoles))
     conditions = []
+
+    if q:
+        from unidecode import unidecode
+        q_norm = unidecode(q).lower().replace(' ', '')
+        title_expr = func.replace(func.unaccent(func.lower(Product.title)), ' ', '')
+        if q_norm in ALIAS_MAP:
+            alias_patterns = [f"%{alias}%" for alias in ALIAS_MAP[q_norm]]
+            conditions.append(or_(*[title_expr.ilike(pat) for pat in alias_patterns]))
+        else:
+            conditions.append(title_expr.ilike(f"%{q_norm}%"))
 
     if type_id is not None:
         conditions.append(cast(Product.type_id_id, Integer) == type_id)
@@ -1226,6 +1238,7 @@ async def validate_coupon_for_product(
     total_after = total_before
     discounted_items: list[DiscountedItem] = []
 
+
     if is_valid and coupon.percentage_off and coupon.percentage_off > 0:
         discount_factor = (100 - coupon.percentage_off) / 100.0
         discounted_total = 0.0
@@ -1268,6 +1281,19 @@ async def validate_coupon_for_product(
                 discounted_total += item.unit_price * item.quantity
 
         total_after = discounted_total  # moved outside the loop
+
+        # If coupon is restricted to specific products and none matched, mark as invalid
+        if coupon_game_detail_ids and not discounted_items:
+            return ValidateCouponResponse(
+                valid=False,
+                message="El cupón no aplica a los productos del carrito.",
+                code=coupon.name_coupon,
+                coupon_id=coupon.id_coupon,
+                total_before=total_before,
+                total_after=total_before,
+                discount_amount=0.0,
+                discounted_items=[],
+            )
 
     discount_amount = max(total_before - total_after, 0.0)
 

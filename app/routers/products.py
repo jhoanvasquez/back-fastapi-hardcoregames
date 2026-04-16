@@ -161,52 +161,27 @@ async def _evaluate_coupon_business_rules(
 
         if exp_date <= now:
             return False, "El cupón ha expirado."
+    
 
     # 2) Coupon bound to a specific user
     if coupon.user_id is not None and coupon.user_id != user_id:
         return False, "Este cupón no es válido para tu cuenta."
-
-    # 3) Coupon bound to specific GameDetails (M2M) — at least one linked
-    #    item must be present in the cart. Empty = applies to all.
+    
+    # 3) Coupon bound to specific GameDetails (M2M).
+    #    If the coupon has no linked GameDetails (empty set) → skip this check entirely.
+    #    If it does have linked GameDetails → at least one cart item's game detail ID
+    #    (combination_id preferred, product_id as fallback) must be present in that set.
     res_gd = await session.execute(
         select(CouponGameDetail.gamedetail_id)
         .where(CouponGameDetail.coupon_id == coupon.id_coupon)
     )
     coupon_game_detail_ids = {row[0] for row in res_gd.all()}
     if coupon_game_detail_ids:
-        # Fetch allowed GameDetail attributes for the coupon
-        res_products = await session.execute(
-            select(
-                GameDetail.id_game_detail,
-                GameDetail.licencia_id,
-                GameDetail.consola_id,
-                GameDetail.duracion_dias_alquiler
-            ).where(GameDetail.id_game_detail.in_(coupon_game_detail_ids))
-        )
-        allowed_combinations = {
-            (row.licencia_id, row.consola_id, row.duracion_dias_alquiler)
-            for row in res_products.all()
+        cart_game_detail_ids = {
+            item.combination_id if item.combination_id is not None else item.combination_id
+            for item in cart_items
         }
-
-        # For each cart item, fetch its GameDetail and compare attributes
-        found_match = False
-        for item in cart_items:
-            # If combination_id is provided, use it; else, skip
-            if item.product_id is not None:
-                res_cart_gd = await session.execute(
-                    select(
-                        GameDetail.licencia_id,
-                        GameDetail.consola_id,
-                        GameDetail.duracion_dias_alquiler
-                    ).where(GameDetail.id_game_detail == item.product_id)
-                )
-                cart_gd = res_cart_gd.first()
-                if cart_gd:
-                    cart_tuple = (cart_gd.licencia_id, cart_gd.consola_id, cart_gd.duracion_dias_alquiler)
-                    if cart_tuple in allowed_combinations:
-                        found_match = True
-                        break
-        if not found_match:
+        if not coupon_game_detail_ids & cart_game_detail_ids:
             return False, "El cupón no aplica a los productos del carrito."
 
     # 4) Evaluate rule rows attached to the coupon
@@ -1210,10 +1185,6 @@ async def validate_coupon_for_product(
             func.lower(Coupon.name_coupon) == code.lower(),
             Coupon.expiration_date > now,
             Coupon.is_valid.is_(True),
-            or_(
-                Coupon.user_id.is_(None),
-                Coupon.user_id == current_user.id,
-            ),
         ).limit(1)
     )
     coupon = result.scalars().first()

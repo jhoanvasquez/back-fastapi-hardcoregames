@@ -1,5 +1,4 @@
 from datetime import datetime, date, timedelta, timezone
-from sys import breakpointhook
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -178,7 +177,7 @@ async def _evaluate_coupon_business_rules(
     coupon_game_detail_ids = {row[0] for row in res_gd.all()}
     if coupon_game_detail_ids:
         cart_game_detail_ids = {
-            item.combination_id if item.combination_id is not None else item.combination_id
+            item.combination_id if item.combination_id is not None else item.product_id
             for item in cart_items
         }
         if not coupon_game_detail_ids & cart_game_detail_ids:
@@ -1221,14 +1220,13 @@ async def validate_coupon_for_product(
             .where(CouponGameDetail.coupon_id == coupon.id_coupon)
         )
         coupon_game_detail_ids = {row[0] for row in res_gd.all()}
-
         for item in payload.cart_items:
             if not coupon_game_detail_ids:
                 # No restriction — discount applies to everything
                 applies = True
-            elif item.combination_id is not None:
+            elif item.product_id is not None:
                 # Tier 1: explicit combination_id matches a linked gamedetail_id
-                applies = item.combination_id in coupon_game_detail_ids
+                applies = item.product_id in coupon_game_detail_ids
             else:
                 # Tier 2: client sends gamedetail_id as product_id
                 applies = item.product_id in coupon_game_detail_ids

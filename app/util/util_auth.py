@@ -13,7 +13,7 @@ from app.models import User
 
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here-CHANGE-IN-PRODUCTION")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "120"))
 RESET_SECRET_KEY = os.getenv("RESET_SECRET_KEY", SECRET_KEY)
 RESET_TOKEN_EXPIRE_SECONDS = int(os.getenv("RESET_TOKEN_EXPIRE_SECONDS", "3600"))
 
@@ -74,7 +74,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt

@@ -570,7 +570,12 @@ async def get_favorites(limit: int = 20, offset: int = 0, session: AsyncSession 
     """
     Obtener productos marcados como favoritos (destacado=True) ordenados por calification (desc).
     """
-    query = select(Product).where(Product.destacado.is_(True)).order_by(Product.calification.desc())
+    query = (
+        select(Product)
+        .options(selectinload(Product.consoles))
+        .where(Product.destacado.is_(True))
+        .order_by(Product.calification.desc())
+    )
     if offset:
         query = query.offset(offset)
     query = query.limit(limit)
@@ -595,6 +600,10 @@ async def get_favorites(limit: int = 20, offset: int = 0, session: AsyncSession 
             "destacado": p.destacado,
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
+            "consoles": [
+                {"id_console": c.id_console}
+                for c in getattr(p, "consoles", []) or []
+            ],
         }
         for p in products
     ]
@@ -1142,6 +1151,7 @@ async def get_most_sold_products(
 
     query = (
         select(Product, func.count(SaleDetail.id_sale_detail).label("sales_count"))
+        .options(selectinload(Product.consoles))
         .join(SaleDetail, SaleDetail.producto_id == Product.id_product)
         .group_by(Product.id_product)
         .order_by(func.count(SaleDetail.id_sale_detail).desc())
@@ -1176,6 +1186,10 @@ async def get_most_sold_products(
             "price": min_prices.get(p.id_product),
             "price_discount": min_discount_prices.get(p.id_product),
             "sales_count": int(sales_counts.get(p.id_product, 0)),
+            "consoles": [
+                {"id_console": c.id_console}
+                for c in getattr(p, "consoles", []) or []
+            ],
         }
         for p in products
     ]

@@ -1104,10 +1104,10 @@ async def search_products(q: str, limit: int = 20, use_trgm: bool = False, sessi
             for alias in ALIAS_MAP[search_norm]
         ]
         conditions = [title_expr.ilike(pat) for pat in alias_patterns]
-        base = select(Product).where(or_(*conditions)).limit(limit)
+        base = select(Product).options(selectinload(Product.consoles)).where(or_(*conditions)).limit(limit)
     else:
         pattern = f"%{search_norm}%"
-        base = select(Product).where(title_expr.ilike(pattern)).limit(limit)
+        base = select(Product).options(selectinload(Product.consoles)).where(title_expr.ilike(pattern)).limit(limit)
 
     if use_trgm:
         base = base.order_by(func.similarity(Product.title, q).desc())
@@ -1129,7 +1129,11 @@ async def search_products(q: str, limit: int = 20, use_trgm: bool = False, sessi
             "puntos_venta": p.puntos_venta,
             "type_id": p.type_id_id,
             "price": min_prices.get(p.id_product),
-            "price_discount": min_discount_prices.get(p.id_product)
+            "price_discount": min_discount_prices.get(p.id_product),
+            "consoles": [
+                {"id_console": c.id_console}
+                for c in getattr(p, "consoles", []) or []
+            ],
         }
         for p in products
     ]

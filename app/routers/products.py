@@ -38,10 +38,17 @@ ALIAS_MAP = {
     'reddeadredemption2': ['rdr2', 'reddead', 'redemption', 'rdrii', 'reddeadredemptionii', 'reddeadredemption', 'reddead2'],
     'reddeadredemption': ['reddeadredemption2', 'rdr2', 'reddead', 'redemption', 'rdrii', 'reddeadredemptionii', 'reddead2'],
     'reddead2': ['reddeadredemption2', 'rdr2', 'reddead', 'redemption', 'rdrii', 'reddeadredemptionii', 'reddeadredemption'],
-    'fc26': ['fc 26'],
-    'fifa26': ['fc 26'],
-    'fifa 26': ['fc 26'],
+    'fc26': ['fc 26 Standard'],
+    'fifa26': ['fc 26 Standard'],
+    'fifa 26': ['fc 26 Standard'],
+    'fc 26': ['FC 26 Standard'],
 }
+
+
+def _normalize_search_text(value: str) -> str:
+    from unidecode import unidecode
+
+    return unidecode(value).lower().replace(' ', '')
 
 class CartItem(BaseModel):
     """Single item in the cart used for coupon validation."""
@@ -456,16 +463,15 @@ async def list_products(
     query = select(Product).options(selectinload(Product.consoles)).order_by(Product.id_product)
 
     if search:
-        def normalize(s):
-            from unidecode import unidecode
-            return unidecode(s).lower().replace(' ', '')
-        
-        search_norm = normalize(search)
+        search_norm = _normalize_search_text(search)
         title_expr = func.replace(func.unaccent(func.lower(Product.title)), ' ', '')
 
         # If search matches an alias, search for all mapped aliases
         if search_norm in ALIAS_MAP:
-            alias_patterns = [f"%{alias}%" for alias in ALIAS_MAP[search_norm]]
+            alias_patterns = [
+                f"%{_normalize_search_text(alias)}%"
+                for alias in ALIAS_MAP[search_norm]
+            ]
             conditions = [title_expr.ilike(pat) for pat in alias_patterns]
             query = query.where(or_(*conditions))
         else:
@@ -832,11 +838,13 @@ async def filter_products(
     conditions = []
 
     if q:
-        from unidecode import unidecode
-        q_norm = unidecode(q).lower().replace(' ', '')
+        q_norm = _normalize_search_text(q)
         title_expr = func.replace(func.unaccent(func.lower(Product.title)), ' ', '')
         if q_norm in ALIAS_MAP:
-            alias_patterns = [f"%{alias}%" for alias in ALIAS_MAP[q_norm]]
+            alias_patterns = [
+                f"%{_normalize_search_text(alias)}%"
+                for alias in ALIAS_MAP[q_norm]
+            ]
             conditions.append(or_(*[title_expr.ilike(pat) for pat in alias_patterns]))
         else:
             conditions.append(title_expr.ilike(f"%{q_norm}%"))
@@ -1078,15 +1086,14 @@ async def search_products(q: str, limit: int = 20, use_trgm: bool = False, sessi
     if not q:
         return {"data": []}
 
-    def normalize(s):
-        from unidecode import unidecode
-        return unidecode(s).lower().replace(' ', '')
-
-    search_norm = normalize(q)
+    search_norm = _normalize_search_text(q)
     title_expr = func.replace(func.unaccent(func.lower(Product.title)), ' ', '')
 
     if search_norm in ALIAS_MAP:
-        alias_patterns = [f"%{alias}%" for alias in ALIAS_MAP[search_norm]]
+        alias_patterns = [
+            f"%{_normalize_search_text(alias)}%"
+            for alias in ALIAS_MAP[search_norm]
+        ]
         conditions = [title_expr.ilike(pat) for pat in alias_patterns]
         base = select(Product).where(or_(*conditions)).limit(limit)
     else:

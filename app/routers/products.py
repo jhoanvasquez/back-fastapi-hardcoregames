@@ -42,6 +42,11 @@ ALIAS_MAP = {
     'fifa26': ['fc 26 Standard'],
     'fifa 26': ['fc 26 Standard'],
     'fc 26': ['FC 26 Standard'],
+    'grandtheftautoiv': ['gta iv', 'gta 4'],
+    'gtaiv': ['grand theft auto iv', 'gta 4'],
+    'gta4': ['grand theft auto iv', 'gta iv'],
+    'helldiversii': ['helldivers 2'],
+    'helldivers2': ['helldivers ii'],
 }
 
 

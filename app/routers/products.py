@@ -1096,7 +1096,7 @@ async def get_combination_price_by_game(id_product: int, session: AsyncSession =
 
 
 @router.get("/search")
-async def search_products(q: str, limit: int = 20, use_trgm: bool = False, session: AsyncSession = Depends(get_session)):
+async def search_products(q: str, offset: int = 0, limit: int = 20, use_trgm: bool = False, session: AsyncSession = Depends(get_session)):
     if not q:
         return {"data": []}
 
@@ -1109,13 +1109,17 @@ async def search_products(q: str, limit: int = 20, use_trgm: bool = False, sessi
             for alias in ALIAS_MAP[search_norm]
         ]
         conditions = [title_expr.ilike(pat) for pat in alias_patterns]
-        base = select(Product).options(selectinload(Product.consoles)).where(or_(*conditions)).limit(limit)
+        base = select(Product).options(selectinload(Product.consoles)).where(or_(*conditions))
     else:
         pattern = f"%{search_norm}%"
-        base = select(Product).options(selectinload(Product.consoles)).where(title_expr.ilike(pattern)).limit(limit)
+        base = select(Product).options(selectinload(Product.consoles)).where(title_expr.ilike(pattern))
 
     if use_trgm:
         base = base.order_by(func.similarity(Product.title, q).desc())
+
+    if offset:
+        base = base.offset(offset)
+    base = base.limit(limit)
 
     result = await session.execute(base)
     products = result.scalars().all()

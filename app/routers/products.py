@@ -45,6 +45,9 @@ ALIAS_MAP = {
     'grandtheftautoiv': ['gta iv', 'gta 4'],
     'gtaiv': ['grand theft auto iv', 'gta 4'],
     'gta4': ['grand theft auto iv', 'gta iv'],
+    'gta6': ['grand theft auto vi', 'gta vi', 'gtavi'],
+    'gtavi': ['grand theft auto vi', 'gta 6', 'gta6'],
+    'grandtheftautovi': ['gta 6', 'gta6', 'gta vi', 'gtavi'],
     'helldiversii': ['helldivers 2'],
     'helldivers2': ['helldivers ii'],
 }

@@ -129,7 +129,7 @@ class User(Base):
 
 
 class UserCustomized(Base):
-    __tablename__ = "user_customized_user_customized"
+    __tablename__ = "users_user_customized"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("auth_user.id"), unique=True, nullable=False)

@@ -12,7 +12,6 @@ from app.util.util_auth import (
     create_access_token,
     ACCESS_TOKEN_EXPIRE_MINUTES,
     generate_reset_token,
-    verify_reset_token,
     RESET_TOKEN_EXPIRE_SECONDS,
     get_current_user,
 )
@@ -70,6 +69,7 @@ class ForgotPasswordRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     token: str
+    email: str
     new_password: constr(min_length=8)
     confirm_password: constr(min_length=8)
 
@@ -213,11 +213,7 @@ async def reset_password(payload: ResetPasswordRequest, session: AsyncSession = 
     if payload.new_password != payload.confirm_password:
         raise HTTPException(status_code=400, detail="Las contraseñas no coinciden")
 
-    email = verify_reset_token(payload.token)
-    if not email:
-        raise HTTPException(status_code=400, detail="Token inválido o expirado")
-
-    user = await auth_repo.get_user_by_email(session, email=email)
+    user = await auth_repo.get_user_by_email(session, email=payload.email)
     if not user:
         raise HTTPException(status_code=400, detail="El usuario ya no existe")
 
